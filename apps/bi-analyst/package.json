@@ -1,0 +1,50 @@
+{
+  "name": "@agent-platform/bi-analyst",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "start": "node dist/main.js",
+    "start:staging": "node dist/main.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "verify:artifact": "tsx scripts/verify-production-artifact.ts",
+    "index:metadata": "tsx scripts/index-demo-metadata.ts",
+    "test": "tsx tests/run.ts --unit",
+    "test:unit": "tsx tests/run.ts --unit",
+    "test:contract": "tsx tests/run.ts --contract",
+    "test:security": "tsx tests/run.ts --security",
+    "test:integration": "tsx tests/run.ts --integration",
+    "test:integration:local": "tsx tests/run.ts --integration --e2e-local",
+    "test:integration:services": "tsx tests/run.ts --integration-services",
+    "test:evaluation": "tsx tests/run.ts --evaluation",
+    "test:integration:retry": "tsx tests/run.ts --integration-retry",
+    "test:e2e:local": "tsx tests/run.ts --e2e-local"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@langchain/classic": "^1.0.36",
+    "@langchain/core": "^1.2.0",
+    "@langchain/langgraph": "^1.4.2",
+    "@langchain/langgraph-checkpoint": "^1.0.0",
+    "@langchain/openai": "^1.5.1",
+    "@langchain/qdrant": "^1.0.3",
+    "@langchain/textsplitters": "^1.0.1",
+    "@qdrant/js-client-rest": "^1.18.0",
+    "better-sqlite3": "^12.11.1",
+    "dotenv": "^17.4.2",
+    "langchain": "^1.5.2",
+    "@agent-platform/llm-sdk": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.9.3",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}

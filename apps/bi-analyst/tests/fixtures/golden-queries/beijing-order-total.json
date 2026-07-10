@@ -1,0 +1,11 @@
+{
+  "id": "GQ-001",
+  "description": "北京用户订单总额",
+  "query": "查一下北京用户上个月的订单总额",
+  "expected": {
+    "datasourceId": "ecommerce_sqlite",
+    "tables": ["users", "orders"],
+    "columns": ["users.city", "orders.amount", "orders.user_id"],
+    "sqlFeatures": ["JOIN", "SUM", "北京"]
+  }
+}

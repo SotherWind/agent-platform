@@ -1,0 +1,12 @@
+# 数据源配置示例（无真实密码）
+datasources:
+  - id: ecommerce_sqlite
+    label: 电商演示库
+    domain: retail
+    productType: SQLite
+    dialectFamily: sqlite
+    connection:
+      filePath: ./data/ecommerce.db
+    exposedSchemas:
+      - main
+    defaultSchema: main

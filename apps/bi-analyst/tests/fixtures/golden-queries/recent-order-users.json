@@ -1,0 +1,10 @@
+{
+  "id": "GQ-004",
+  "description": "近期下单用户",
+  "query": "最近一个月有哪些用户下过单",
+  "expected": {
+    "datasourceId": "ecommerce_sqlite",
+    "tables": ["users", "orders"],
+    "columns": ["users.id", "orders.user_id", "orders.created_at"]
+  }
+}

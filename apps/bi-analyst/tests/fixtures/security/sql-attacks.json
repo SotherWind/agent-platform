@@ -1,0 +1,111 @@
+{
+  "description": "SQL 安全攻击集 — Phase A 验收 SEC-*",
+  "cases": [
+    {
+      "id": "SEC-001",
+      "category": "ddl",
+      "description": "CREATE TABLE",
+      "sql": "CREATE TABLE evil (id INT)",
+      "expectValid": false
+    },
+    {
+      "id": "SEC-002",
+      "category": "dml",
+      "description": "UPDATE 篡改",
+      "sql": "UPDATE users SET city = 'hacked' WHERE id = 1",
+      "expectValid": false
+    },
+    {
+      "id": "SEC-003",
+      "category": "dml",
+      "description": "DELETE 删除",
+      "sql": "DELETE FROM users WHERE id = 1",
+      "expectValid": false
+    },
+    {
+      "id": "SEC-004",
+      "category": "multi_statement",
+      "description": "多语句注入",
+      "sql": "SELECT 1; DROP TABLE users",
+      "expectValid": false
+    },
+    {
+      "id": "SEC-005",
+      "category": "side_effect",
+      "description": "SELECT INTO 副作用",
+      "sql": "SELECT * INTO backup FROM users",
+      "expectValid": false
+    },
+    {
+      "id": "SEC-006",
+      "category": "dangerous_function",
+      "description": "load_file 文件读取",
+      "sql": "SELECT load_file('/etc/passwd')",
+      "expectValid": false
+    },
+    {
+      "id": "SEC-007",
+      "category": "dangerous_function",
+      "description": "xp_cmdshell 命令执行",
+      "sql": "SELECT xp_cmdshell('whoami')",
+      "expectValid": false
+    },
+    {
+      "id": "SEC-008",
+      "category": "pragma",
+      "description": "PRAGMA 篡改",
+      "sql": "PRAGMA writable_schema = ON",
+      "expectValid": false
+    },
+    {
+      "id": "SEC-009",
+      "category": "attach",
+      "description": "ATTACH 附加数据库",
+      "sql": "ATTACH DATABASE '/tmp/evil.db' AS evil",
+      "expectValid": false
+    },
+    {
+      "id": "SEC-010",
+      "category": "cte_injection",
+      "description": "WITH 子句内嵌 DELETE",
+      "sql": "WITH t AS (DELETE FROM users RETURNING *) SELECT * FROM t",
+      "expectValid": false
+    },
+    {
+      "id": "SEC-011",
+      "category": "cte_injection",
+      "description": "WITH 子句内嵌 UPDATE",
+      "sql": "WITH t AS (UPDATE users SET city = 'x' WHERE id = 1 RETURNING *) SELECT * FROM t",
+      "expectValid": false
+    },
+    {
+      "id": "SEC-012",
+      "category": "comment_bypass",
+      "description": "注释混淆 UPDATE",
+      "sql": "/**/ UPDATE users SET city = 'x' WHERE id = 1",
+      "expectValid": false
+    },
+    {
+      "id": "SEC-013",
+      "category": "union",
+      "description": "UNION 访问越权表",
+      "sql": "SELECT city FROM users UNION SELECT password FROM admin_secrets",
+      "expectValid": false,
+      "allowedTables": ["users", "orders"]
+    },
+    {
+      "id": "SEC-014",
+      "category": "safe",
+      "description": "合法只读 SELECT",
+      "sql": "SELECT city, COUNT(*) FROM users GROUP BY city",
+      "expectValid": true
+    },
+    {
+      "id": "SEC-015",
+      "category": "safe",
+      "description": "合法 WITH 只读 CTE",
+      "sql": "WITH cte AS (SELECT city FROM users) SELECT * FROM cte",
+      "expectValid": true
+    }
+  ]
+}

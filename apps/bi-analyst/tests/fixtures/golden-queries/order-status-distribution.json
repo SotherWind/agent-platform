@@ -1,0 +1,10 @@
+{
+  "id": "GQ-003",
+  "description": "订单状态分布",
+  "query": "看一下订单状态的分布情况",
+  "expected": {
+    "datasourceId": "ecommerce_sqlite",
+    "tables": ["orders"],
+    "columns": ["orders.status"]
+  }
+}

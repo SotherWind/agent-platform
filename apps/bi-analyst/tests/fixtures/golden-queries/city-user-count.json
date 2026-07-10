@@ -1,0 +1,10 @@
+{
+  "id": "GQ-002",
+  "description": "各城市用户数量",
+  "query": "统计各城市的用户数量",
+  "expected": {
+    "datasourceId": "ecommerce_sqlite",
+    "tables": ["users"],
+    "columns": ["users.city", "users.id"]
+  }
+}
