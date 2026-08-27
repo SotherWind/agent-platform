@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { createTestPrincipal } from "../../src/auth/principal.js";
+import { createTestPrincipal } from "../helpers/principal.js";
 import { createDefaultAccessPolicy } from "../../src/policy/access-policy.js";
 import { createDemoRetriever } from "../../src/metadata/demo-documents.js";
 import { InMemorySchemaRetriever } from "../../src/metadata/retriever.js";
-import { createIndexedVectorRetriever } from "../../src/metadata/vector-schema-retriever.js";
+import {
+  createIndexedVectorRetriever,
+  VectorSchemaRetriever,
+} from "../../src/metadata/vector-schema-retriever.js";
+import { InMemoryVectorIndexBackend } from "../../src/metadata/vector-backend.js";
 import type { SchemaRetriever } from "../../src/metadata/retriever.js";
 import type { SchemaDocument } from "../../src/metadata/types.js";
 import { test, section } from "../helpers/runner.js";
@@ -109,6 +113,16 @@ export async function runSchemaRetrieverContract(
     );
     assert.deepEqual(docs, []);
   });
+  await test("in-memory snapshots expose indexedAt", async () => {
+    const retriever = await factory();
+    const docs = await retriever.search(
+      options.searchQuery,
+      { docType: "table", datasourceId: options.datasourceId, limit: 5 },
+      policy,
+    );
+    assert.ok(docs.length > 0);
+    assert.ok(docs.every((doc) => doc.indexedAt));
+  });
 }
 
 export async function testSchemaRetrieverContract() {
@@ -134,4 +148,44 @@ export async function testSchemaRetrieverContract() {
     },
     { datasourceId: "test", searchQuery: "用户" },
   );
+
+  await test("VectorSchemaRetriever deduplicates query embeddings", async () => {
+    let embedCalls = 0;
+    const embeddings = {
+      modelVersion: "test",
+      vectorSize: 2,
+      async embed(_texts: string[]) {
+        embedCalls += 1;
+        return [[1, 0]];
+      },
+    };
+    const backend = new InMemoryVectorIndexBackend();
+    await backend.createCollection("query-cache-test", 2);
+    await backend.upsert("query-cache-test", [
+      {
+        id: "test.users",
+        vector: [1, 0],
+        payload: {
+          id: "test.users",
+          docType: "table",
+          datasourceId: "test",
+          domain: "retail",
+          dialectFamily: "sqlite",
+          table: "users",
+          reviewStatus: "approved",
+          content: "users",
+        },
+      },
+    ]);
+    const retriever = new VectorSchemaRetriever({
+      backend,
+      embeddings,
+      collectionAlias: "query-cache-test",
+    });
+    await Promise.all([
+      retriever.search("same query", { docType: "table", datasourceId: "test" }),
+      retriever.search("same query", { docType: "table", datasourceId: "test" }),
+    ]);
+    assert.equal(embedCalls, 1);
+  });
 }

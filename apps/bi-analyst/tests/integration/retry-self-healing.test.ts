@@ -3,7 +3,11 @@ import { buildGraph } from "../../src/agent";
 import { generateSqlTool } from "../../src/tools/generate_sql";
 import { test, section, addSkipped } from "../helpers/runner";
 import { createTestDb, cleanupDb } from "../helpers/db";
-import { hasLlmConfig, MULTI_BAD_SQL } from "../helpers/fixtures";
+import {
+  deterministicIntegrationSql,
+  hasLlmConfig,
+  MULTI_BAD_SQL,
+} from "../helpers/fixtures";
 import { extractFixError, logRetryTrail } from "../helpers/retry-sim";
 import { invokeGraphWithRetry, patchSqlSequence, sleep } from "../helpers/graph";
 import { getTestRuntimeProfile } from "../helpers/profile";
@@ -21,8 +25,9 @@ export async function testIntegrationRetrySelfHealing(runIntegration: boolean) {
     return;
   }
 
-  if (!hasLlmConfig()) {
-    console.log("  ⊘ 跳过：未配置 MODEL_API_KEY");
+  const useLiveLlm = process.env.ENABLE_LIVE_LLM_EVAL === "1";
+  if (useLiveLlm && !hasLlmConfig()) {
+    console.log("  ⊘ 跳过：已请求 live LLM，但未配置 MODEL_API_KEY");
     addSkipped(INTEGRATION_RETRY_CASE_COUNT);
     return;
   }
@@ -35,13 +40,25 @@ export async function testIntegrationRetrySelfHealing(runIntegration: boolean) {
       maxRetryCount,
     });
   const originalInvoke = generateSqlTool.invoke.bind(generateSqlTool);
+  const fallbackInvoke = useLiveLlm
+    ? originalInvoke
+    : (async (input: unknown) =>
+        deterministicIntegrationSql(
+          String((input as { query?: unknown }).query ?? ""),
+        )) as typeof generateSqlTool.invoke;
   const originalMaxRetry = process.env.MAX_RETRY_COUNT;
+  if (!useLiveLlm) {
+    generateSqlTool.invoke = (async (input) =>
+      deterministicIntegrationSql(
+        String((input as { query?: unknown }).query ?? ""),
+      )) as typeof generateSqlTool.invoke;
+  }
 
   try {
     await test("三次重试后自愈：连续 3 种不同错误 → 第 4 次 LLM 修复", async () => {
       process.env.MAX_RETRY_COUNT = "3";
       const graph = buildGraphWithRetry(3);
-      const tracker = patchSqlSequence(originalInvoke, [...MULTI_BAD_SQL], "llm");
+      const tracker = patchSqlSequence(fallbackInvoke, [...MULTI_BAD_SQL], "llm");
 
       const result = await invokeGraphWithRetry(
         graph,
@@ -75,11 +92,11 @@ export async function testIntegrationRetrySelfHealing(runIntegration: boolean) {
     await test("三次重试耗尽：4 次坏 SQL 全部失败 → Execution error", async () => {
       process.env.MAX_RETRY_COUNT = "3";
       const graph = buildGraphWithRetry(3);
-      const tracker = patchSqlSequence(originalInvoke, [...MULTI_BAD_SQL, "DROP TABLE users"], "always-bad");
+      const tracker = patchSqlSequence(fallbackInvoke, [...MULTI_BAD_SQL, "DROP TABLE users"], "always-bad");
 
       const result = await invokeGraphWithRetry(
         graph,
-        "查询各城市订单总额",
+        "查看订单明细中的状态、金额和下单时间",
         "三次重试耗尽",
         INTEGRATION_TIMEOUT_MS,
       );
@@ -110,7 +127,7 @@ export async function testIntegrationRetrySelfHealing(runIntegration: boolean) {
         const payload = input as { query: string };
         capturedQueries.push(payload.query);
         if (sqlGenCalls === 1) return "SELECT FROM users";
-        return originalInvoke(input);
+        return fallbackInvoke(input);
       }) as typeof generateSqlTool.invoke;
 
       const result = await invokeGraphWithRetry(

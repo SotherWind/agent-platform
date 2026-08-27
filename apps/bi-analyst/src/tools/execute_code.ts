@@ -3,7 +3,11 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { SqlExecutor } from "../datasource/types.js";
 import { createExecutor } from "../datasource/executors/index.js";
-import { applyResultPolicy } from "../policy/result-policy.js";
+import {
+  applyResultPolicy,
+  extractAggregationCountColumns,
+  isAggregationQuery,
+} from "../policy/result-policy.js";
 import type { AccessPolicy } from "../policy/access-policy.js";
 
 const ExecuteCodePayload = z.object({
@@ -15,6 +19,7 @@ const ExecuteCodePayload = z.object({
     sessionId: z.string().optional().describe("会话 ID"),
     requestId: z.string().optional().describe("请求 ID"),
     timeoutMs: z.number().positive().describe("超时时间（毫秒）"),
+    params: z.array(z.union([z.string(), z.number()])).optional(),
   }),
   expectedFormat: z.enum(["table", "chart-ready"]),
 });
@@ -53,12 +58,24 @@ export function createExecuteCodeTool(
             requestId: executionContext.requestId,
             timeoutMs: executionContext.timeoutMs,
             maxRows: options.maxRows,
+            allowedTables: options.accessPolicy?.allowedTables,
+            allowedColumns: options.accessPolicy?.allowedColumns,
+            deniedColumns: options.accessPolicy?.deniedColumns,
+            rowFilters: options.accessPolicy?.rowFilters,
+            params: executionContext.params,
           },
           controller.signal,
         );
 
         return applyResultPolicy(raw, {
           accessPolicy: options.accessPolicy,
+          options: {
+            minAggregationCount: options.accessPolicy?.minAggregationCount,
+            aggregationCountColumns: extractAggregationCountColumns(sql),
+            enforceAggregationCount:
+              options.accessPolicy?.minAggregationCount !== undefined &&
+              isAggregationQuery(sql),
+          },
         });
       } finally {
         clearTimeout(timeout);

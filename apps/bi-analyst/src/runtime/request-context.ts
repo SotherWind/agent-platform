@@ -8,10 +8,13 @@ export interface RequestContext {
   traceId: string;
   principal: AuthenticatedPrincipal;
   sessionId?: string;
+  /** 结构化澄清选项（服务端 ID），由 API 解析后注入 */
+  clarificationChoice?: string;
   deadlineAt: number;
   policySnapshot: AccessPolicy;
   runtimeProfile: RuntimeProfile;
   abortSignal: AbortSignal;
+  dispose(): void;
 }
 
 export interface CreateRequestContextInput {
@@ -19,6 +22,7 @@ export interface CreateRequestContextInput {
   policySnapshot: AccessPolicy;
   runtimeProfile: RuntimeProfile;
   sessionId?: string;
+  clarificationChoice?: string;
   requestId?: string;
   traceId?: string;
   timeoutMs?: number;
@@ -30,10 +34,7 @@ export function createRequestContext(
 ): RequestContext {
   const requestId = input.requestId ?? `req-${randomUUID()}`;
   const traceId = input.traceId ?? requestId;
-  const timeoutMs =
-    input.timeoutMs ?? input.runtimeProfile.environment === "test"
-      ? 120_000
-      : 120_000;
+  const timeoutMs = input.timeoutMs ?? 120_000;
 
   const controller = new AbortController();
   const deadlineAt = Date.now() + timeoutMs;
@@ -43,25 +44,36 @@ export function createRequestContext(
     timer.unref();
   }
 
+  const onParentAbort = () => controller.abort();
   if (input.abortSignal) {
     if (input.abortSignal.aborted) {
       controller.abort();
     } else {
-      input.abortSignal.addEventListener("abort", () => controller.abort(), {
+      input.abortSignal.addEventListener("abort", onParentAbort, {
         once: true,
       });
     }
   }
+
+  let disposed = false;
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    clearTimeout(timer);
+    input.abortSignal?.removeEventListener("abort", onParentAbort);
+  };
 
   return {
     requestId,
     traceId,
     principal: input.principal,
     sessionId: input.sessionId,
+    clarificationChoice: input.clarificationChoice,
     deadlineAt,
     policySnapshot: input.policySnapshot,
     runtimeProfile: input.runtimeProfile,
     abortSignal: controller.signal,
+    dispose,
   };
 }
 

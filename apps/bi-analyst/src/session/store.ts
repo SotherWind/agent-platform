@@ -1,4 +1,6 @@
-import type Database from "better-sqlite3";
+import Database from "better-sqlite3";
+import fs from "node:fs";
+import path from "node:path";
 import type { AuthenticatedPrincipal } from "../auth/types.js";
 import type { SessionRecord } from "../auth/types.js";
 import { assertSessionOwnership, AuthError } from "../auth/principal.js";
@@ -23,6 +25,31 @@ export interface SessionStore {
     sessionId: string,
     policyVersion: string,
   ): SessionRecord;
+  getAsync?(
+    tenantId: string,
+    subjectId: string,
+    sessionId: string,
+  ): Promise<SessionRecord | null>;
+  upsertAsync?(record: SessionRecord): Promise<SessionRecord>;
+  touchAsync?(
+    tenantId: string,
+    subjectId: string,
+    sessionId: string,
+    policyVersion: string,
+  ): Promise<SessionRecord>;
+  deleteAsync?(
+    tenantId: string,
+    subjectId: string,
+    sessionId: string,
+  ): Promise<void>;
+  purgeExpiredAsync?(now?: Date): Promise<number>;
+  registerOrValidateAsync?(
+    principal: AuthenticatedPrincipal,
+    sessionId: string,
+    policyVersion: string,
+  ): Promise<SessionRecord>;
+  healthCheck?(): Promise<{ healthy: boolean }>;
+  close?(): void | Promise<void>;
 }
 
 export const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -192,6 +219,19 @@ export class SqliteSessionStore implements SessionStore {
       policyVersion,
     );
   }
+
+  close(): void {
+    this.db.close();
+  }
+}
+
+export function createFileSessionStore(
+  filePath: string,
+  ttlMs = DEFAULT_SESSION_TTL_MS,
+): SqliteSessionStore {
+  const absolute = path.resolve(filePath);
+  fs.mkdirSync(path.dirname(absolute), { recursive: true });
+  return new SqliteSessionStore(new Database(absolute), ttlMs);
 }
 
 /** 内存 SessionStore：单元测试用 */
@@ -302,4 +342,54 @@ export class InMemorySessionStore implements SessionStore {
       policyVersion,
     );
   }
+}
+
+export async function getSessionAsync(
+  store: SessionStore,
+  tenantId: string,
+  subjectId: string,
+  sessionId: string,
+): Promise<SessionRecord | null> {
+  return store.getAsync
+    ? store.getAsync(tenantId, subjectId, sessionId)
+    : store.get(tenantId, subjectId, sessionId);
+}
+
+export async function upsertSessionAsync(
+  store: SessionStore,
+  record: SessionRecord,
+): Promise<SessionRecord> {
+  return store.upsertAsync ? store.upsertAsync(record) : store.upsert(record);
+}
+
+export async function touchSessionAsync(
+  store: SessionStore,
+  tenantId: string,
+  subjectId: string,
+  sessionId: string,
+  policyVersion: string,
+): Promise<SessionRecord> {
+  return store.touchAsync
+    ? store.touchAsync(tenantId, subjectId, sessionId, policyVersion)
+    : store.touch(tenantId, subjectId, sessionId, policyVersion);
+}
+
+export async function purgeExpiredSessionsAsync(
+  store: SessionStore,
+  now = new Date(),
+): Promise<number> {
+  return store.purgeExpiredAsync
+    ? store.purgeExpiredAsync(now)
+    : store.purgeExpired(now);
+}
+
+export async function registerOrValidateSessionAsync(
+  store: SessionStore,
+  principal: AuthenticatedPrincipal,
+  sessionId: string,
+  policyVersion: string,
+): Promise<SessionRecord> {
+  return store.registerOrValidateAsync
+    ? store.registerOrValidateAsync(principal, sessionId, policyVersion)
+    : store.registerOrValidate(principal, sessionId, policyVersion);
 }

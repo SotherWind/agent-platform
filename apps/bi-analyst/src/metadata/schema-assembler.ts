@@ -31,7 +31,9 @@ export function assembleSchema(
     );
 
   const tableDocs = documents.filter((d) => d.docType === "table");
-  const columnDocs = documents.filter((d) => d.docType === "column");
+  const columnDocs = documents.filter(
+    (d) => d.docType === "column" || d.docType === "column_group",
+  );
   const relationDocs = documents.filter((d) => d.docType === "relation");
   const metricDocs = documents.filter((d) => d.docType === "metric");
 
@@ -65,6 +67,10 @@ export function assembleSchema(
 
   for (const t of tableDocs) {
     const key = t.table!;
+    if (policy?.deniedTables?.includes(key)) continue;
+    if (policy?.allowedTables?.length && !policy.allowedTables.includes(key)) {
+      continue;
+    }
     tablesMap.set(key, {
       schema: t.schema,
       name: key,
@@ -75,6 +81,13 @@ export function assembleSchema(
 
   for (const c of columnDocs) {
     if (!c.table || !c.column) continue;
+    if (policy?.deniedTables?.includes(c.table)) continue;
+    if (
+      policy?.allowedTables?.length &&
+      !policy.allowedTables.includes(c.table)
+    ) {
+      continue;
+    }
     if (isSensitive(c, policy)) continue;
     if (isDeniedColumn(c, policy)) continue;
 

@@ -1,10 +1,184 @@
 # BI Analyst 企业级演进计划
 
-> 版本：v1.0  
-> 日期：2026-07-10  
-> 状态：规划中
+> 版本：v1.19
+> 日期：2026-07-29
+> 状态：单机部署范围已完成（Phase A～E verified；Phase D 产品仍按单机支持矩阵标记）/ Phase F 单机扩展能力 prototype / 云与分布式暂缓
 
-本文档基于当前 `bi-analyst` 原型（Text-to-SQL + 图表 + SQL 自愈重试 + Schema RAG/安全治理原型），描述向**企业级、跨领域、多数据源** BI Agent 演进的完整计划。
+本文档基于当前 `bi-analyst`（Text-to-SQL + 图表 + SQL 自愈 + Schema RAG/安全治理），描述向**企业级、跨领域、多数据源** BI Agent 演进的完整计划。
+
+### 单机优先策略（v1.19）
+
+| 层级 | 范围 | 验收标准 |
+|------|------|----------|
+| **必保单机** | SQLite + Docker MySQL / MariaDB / PostgreSQL | 本地 `verified` / `experimental`；`SINGLE-MACHINE-STAGING-CHECKLIST` L1～L4 |
+| **单机可选** | Oracle / SQL Server | 有镜像或许可再 live；本轮不要求真实 live，不挡主路径 |
+| **先不做** | AnalyticDB、PolarDB、OceanBase、DB2、HANA 等 | 保持 `planned`，不属于本轮单机部署矩阵 |
+| **本轮不纳入** | 云 staging、`production-certified`、跨云密钥 HA、多实例 checkpointer 集群 | 非单机部署任务，不作为本轮未完成项 |
+
+单机 L4：`APP_ENV=staging` + `BI_SINGLE_MACHINE_STAGING=1`（mock JWKS / 可选 InMemory retriever / YAML Registry / live attach）。详见 `docs/SINGLE-MACHINE-STAGING-CHECKLIST.md`、`docs/SUPPORT-STATUS.md`。
+
+### 实施进度（滚动更新）
+
+| 阶段 | 状态 | 说明 |
+|------|------|------|
+| Phase A 基线与可信边界 | **verified（本地）** | RuntimeProfile / API / RequestContext / contract / E2E / CI |
+| Phase B 单源闭环 + Schema RAG | **verified（本地 SQLite）** | AST + EXPLAIN 成本 + rowFilters + PolicyProvider + freshness 答语 + 评测攻击集 + CI |
+| Phase C 逻辑查询与指标层 | **verified（本地）** | LogicalQuery / MetricRegistry / certified 编译 / 双轨路由 / 结构化澄清 / BusinessCalendar 财务周期 |
+| Phase D 多数据源与方言认证 | **verified（单机主路径）** | YAML Registry / MySQL+MariaDB+PG Docker live / Oracle+TSQL experimental Executor / 多方言编译 / MySQL+PG EXPLAIN；云产品认证不纳入本轮 |
+| Phase E 产品化与治理 | **verified（单机受控环境）** | SSE lifecycle/取消/heartbeat/终止事件；审计 TTL/导出/限流/SLO / JWT+OIDC / 云密钥适配器 / HttpPolicyProvider / Postgres History+Checkpointer / Redis / L4 单机 staging / eval-gate |
+| Phase F | **prototype** | scanner/grading + 连库扫描 + MetadataSyncRunner + 调度钩子 + 审核流；规模化与云认证不纳入本轮单机部署 |
+
+**单机运行可靠性优化收口（2026-07-29，v1.19）**：
+
+- PostgreSQL Audit/History API 改为优先读取权威数据库，后台写失败可观测，关闭前会排空写队列；新增跨 store 实例的重启恢复验证
+- live executor 仅由 YAML Registry + SecretProvider 装配；Registry 明确承载 host/port/user/database/secretRef，移除部署运行时的默认账号密码和连接失败静默跳过
+- 保留 `/health` 并新增 `/live`、`/ready`；readiness 聚合 executor、Audit、History、Checkpointer、Redis、Qdrant 和可选 Policy 健康状态，依赖失败返回 503
+- AppServer 关闭变为幂等，统一释放 executor、Redis、History、Audit、Checkpointer 与 SQLite，SIGTERM/SIGINT 设置排空超时且关闭失败返回非零退出码
+- Docker healthcheck 已切到 `/ready`；`typecheck`、production build、artifact 108 文件、unit 310/12、本地 E2E 6/6 与真实 PostgreSQL 310/9 全部通过
+
+**单机最终收口（2026-07-28，v1.18）**：
+
+- 生产 composition root 与 development/test 完全分离；`dist` 仅保留闭合生产依赖图，artifact 门禁确认 **108 个文件**且不含 demo DB、seed、fixture、测试身份或测试路由
+- retail certified metrics 从 3 个补齐为 **5 个**，全部确定性编译；Text-to-SQL 离线 golden 门禁 **5/5**
+- 新增 20 条多数据源路由 golden cases，Top-1 **20/20（100%）**，CI 最低阈值 **95%**
+- `.github/workflows/bi-analyst.yml` 完整覆盖 verify、真实服务 integration 和 staging-image 三个 job；镜像边界门禁排除项目测试/demo 内容，并直接启动该镜像执行 L4 health/MySQL/PG analyze/认证/审计验收
+- 2026-07-28 本机 clean image 构建与 L4 运行态通过：镜像约 **138MB**，health=`staging`，MySQL/PG analyze、request/trace、401 伪造身份拒绝与非空审计均通过
+
+**此前文档对齐（2026-07-22，v1.17）**：
+
+- 重写 §1.1 / §1.2，去掉已过时「仅 SQLite / 无 LogicalQuery」等表述
+- 文首增加「单机优先策略」；与 SUPPORT-STATUS / 单机验收清单对齐
+- 完成远端单机 L4 验收：同一构建产物、`staging` health、MySQL/PG live analyze、审计查询与专属资源清理
+- 完成本地单机 L4 运行态复验：Qdrant 元数据索引、MySQL/PG live analyze、审计非空与伪造身份拒绝均通过
+- 完成本地真实模型复验：真实模型 RAG 生成 SQL，SQLite/MySQL/PG 均执行成功；live schema 通过显式审核后进入 Qdrant
+- 补齐单机 live schema 审核闭环：`sync:metadata:live -- --dry-run` 预览、`--approve` 显式批准并原子重建 Qdrant；MySQL/PG 真实模型 RAG 与 live executor 已通过
+- 将 Oracle/T-SQL 成本门禁、结果降级、导出和 SSE 从“有意后置”改为已完成的本地代码能力；Oracle/T-SQL 真实 live 与云认证明确列为本轮范围外
+
+**此前交付（2026-07-17，v1.14 单机优先收口）**：
+
+- **L4 单机 staging Profile**：`BI_SINGLE_MACHINE_STAGING=1` + jose mock JWKS（`BI_STAGING_MOCK_AUTH`）+ `BI_ALLOW_INMEMORY_RETRIEVER`（无 Qdrant 时）+ YAML Registry；同一 `dist` / `pnpm start:staging`
+- **live 多库 analyze**：`attachLiveDataSources` 支持 staging；staging-acc compose 默认挂 MySQL/PG；`remote-accept.sh` 显式 `datasource.*` 断言
+- **验收断言**：`meta.requestId` / `meta.traceId`；`GET /api/audit` 非空；checklist L4 升必做
+- **SSO 本机**：`OidcAuthProvider`（discovery + JWKS 验签 + `validateSession` 会话绑定）；本地 discovery stub
+- **审计保留（单机）**：`AUDIT_RETENTION_DAYS` + 启动/周期 purge（对接 Sqlite/Postgres AuditStore）；**不做**集群 HA
+- **已完成（单机代码能力）**：导出策略、结果降级提示、SSE lifecycle/取消/heartbeat；真实模型 eval 仍为可选门禁
+- **本轮不纳入**：云 staging / production-certified / planned 方言 live / Oracle-TSQL 真实库 live 矩阵；不影响单机主路径完成
+
+**此前交付（2026-07-17，v1.13 MariaDB live / Oracle·TSQL Executor / 远程策略 / 密钥审计）**：
+
+- Phase D：Docker `bi-mariadb`（宿主机 3307）+ live 矩阵（health/SELECT/DML/rowFilters）；`attachLiveExecutors` 挂载 MariaDB；`OracleExecutor` / `SqlServerExecutor`（可注入客户端；可选 `oracledb` / `tedious` 动态加载；注入客户端支持 EXPLAIN/SHOWPLAN 成本门禁；无客户端时仍 stub）；占位符 `:n` / `@pN`；产品状态 Oracle/SQLServer → experimental
+- Phase E：`HttpPolicyProvider`（`POLICY_SERVICE_URL`）+ 生产 Profile 与文件策略二选一；`AuditingSecretProvider`（`secret.resolved` / `secret.rotation_detected`，默认包装生产密钥源）
+
+**此前交付（2026-07-17，v1.12 方言产品化 / 云密钥 / 同步调度）**：
+
+- Phase D：`compileLogicalQuery` 使用方言分页（Oracle `FETCH FIRST` / T-SQL `OFFSET-FETCH`）；MariaDB → experimental（复用 MysqlExecutor）；`PlannedDialectExecutor` stub；`pnpm verify:dialect-cert` 本地门禁（云范围信息仅作后续参考）
+- Phase E：`AwsSecretsManagerProvider`（SigV4）+ `AzureKeyVaultProvider`（OAuth）+ `CompositeSecretProvider`；生产 Profile 与 Vault 对称装配
+- Phase F：`MetadataSyncScheduler` + `parseMetadataSyncScheduleFromEnv` + `pnpm sync:metadata:schedule`
+
+**此前交付（2026-07-17，Vault / Postgres 持久化 / Redis 缓存）**：
+
+- Phase D/E：`VaultSecretProvider`（KV v2 + token/AppRole）；生产 Profile 在 `VAULT_ADDR` 时自动装配，缺省 fail closed
+- Phase E：`PostgresQueryHistoryStore`（`HISTORY_DATABASE_URL` / 复用 `AUDIT_DATABASE_URL`）
+- Phase B/E：`PostgresCheckpointSaver`（`CHECKPOINT_DATABASE_URL` / 复用历史或审计库）
+- Phase E：`RedisPermissionAwareQueryCache`（L1 内存 + L2 Redis 写穿，`REDIS_URL`）；无依赖 RESP 客户端
+- 装配：`createProductizationFromEnv`；production Profile 接线 Vault/Checkpointer/History/Cache
+
+**此前交付（2026-07-16，JWT / 缓存 hash / 类型掩码）**：
+
+- Phase A/E：`JwtAuthProvider`（`jose` + JWKS）；`AUTH_JWKS_URL` 时 production Profile 自动装配；失败 → 401
+- Phase E：`hashLogicalQuery` + analyze 写缓存双 key（NL + logicalQueryHash）
+- Phase E：ResultPolicy 类型感知掩码（email/phone/number/boolean/date/object）
+
+**此前交付（2026-07-16，澄清/持久化/缓存/同步脚本）**：
+
+- Phase C/E：`clarificationChoice` 请求字段 + `parseClarificationChoice`；Agent 接线 `datasource.*` / `metric.*` / `range.*`
+- Phase E：`PostgresAuditStore` + `createQuasiProductionAuditSink`（`AUDIT_DATABASE_URL`）；Docker PG 合约测
+- Phase E：`SqliteQueryHistoryStore`（development 与 `SqliteAuditStore` 对称）
+- Phase E：查询缓存 key 含 `metadataVersion` + `metricVersion` + `clarificationChoice`；sync 后 `invalidateByMetadataVersion`
+- Phase F：`scripts/sync-metadata.ts`（`pnpm sync:metadata`）扫描 SQLite → `runMetadataSync`
+
+**此前交付（2026-07-16，ExecutorRegistry 装配 + 向量选源）**：
+
+- 本地 Profile 装配 `executorRegistry`（SQLite canonical）；`buildGraph` / API close 接线
+- `attachLiveDataSources`：`BI_ATTACH_LIVE_DATASOURCES=1` 时挂载 Docker MySQL/PG 执行器与 Registry
+- `routeDataSourceAsync`：多源时 SchemaRetriever `docType=datasource` 与启发式分融合；Agent 已切换
+
+**此前交付（2026-07-16，Phase C/D/E/F 剩余缺口收口）**：
+
+- Phase C：`BusinessCalendar` / `resolveTimeRangePreset` / 自然语言时间推断；metric 路径自动填 `timeRange`；澄清含财年选项
+- Phase D：`compileLogicalQuery` 多方言（sqlite/mysql/postgresql）；`ExecutorRegistry` 按 `dataSourceId` 选执行器；MySQL/PG EXPLAIN 成本门禁
+- Phase E：`SlowQueryRecorder` + `/api/queries/slow` 采样字段；`sql.executed` 审计带 `durationMs`
+- Phase F：`runMetadataSync` + `POST /api/metadata/sync/run`（incremental upsert/tombstone 或 rebuild alias）
+
+**此前交付（2026-07-16，Phase D/E 清单收口）**：
+
+- PostgreSQL TLS+CA live；MySQL mTLS（`REQUIRE X509` + client cert）
+- `SchemaIndexer.rollbackAlias` + `POST /api/metadata/alias/rollback`
+- 本地 staging E2E：`pnpm test:e2e:staging`（模型 canary→promote→rollback + alias 回滚）
+- `pnpm docker:certs` 统一生成 CA/MySQL/PG/client 证书
+
+**此前交付（2026-07-16，Phase D TLS 自签证书联调）**：
+
+- Docker MySQL：自签证书 + wrap-entrypoint（修复 Windows 挂载私钥权限）；`pnpm docker:certs`
+- Live：`MySQL live: TLS + CA 校验证书连接`
+
+**此前交付（2026-07-16，Phase D 行级策略 / 只读事务 / TLS 硬化）**：
+
+- MySQL/PG Executor：`prepareExecutableSql` + `rowFilters` 参数绑定；pool client 默认只读事务
+- TLS：`src/datasource/tls.ts` staging/production 禁止关闭证书校验；单测 `tls-prepare-sql`
+- Docker：MySQL utf8mb4 初始化；`pnpm test:live-db` 行级过滤通过
+- 文档：`SUPPORT-STATUS.md` 勾选只读事务 / TLS 硬化 / 行级策略 live
+
+**此前交付（2026-07-16，Phase D Executor 连库认证）**：
+
+- Live Executor：`pnpm test:live-db` 覆盖 MySQL/PG 的 health、SELECT、DML 拒绝、超时
+- 文档：`SUPPORT-STATUS.md` 认证清单部分勾选
+
+**此前交付（2026-07-16，Phase D/F 连库扫描）**：
+
+- Docker Compose：`apps/bi-analyst/docker/docker-compose.yml`（MySQL 8 + Postgres 16 + demo schema）
+- 连库扫描：`scanMysqlSchemaLive` / `scanPostgresSchemaLive`；`pnpm docker:up` → `pnpm test:live-db`
+
+**此前交付（2026-07-15，Phase E/F 深化）**：
+
+- Phase F：`documentsFromScannedTables` 共用装配；`scanMysqlSchemaFromRows` / `scanPostgresSchemaFromRows` + INFORMATION_SCHEMA SQL 常量；`planTableShards` / `planShardedIncrementalSync`
+- Phase E：`src/evaluation/sql-accuracy.ts` + golden `text-to-sql-golden.json`；`pnpm verify:llm-eval` 默认离线准确率门禁，`ENABLE_LIVE_LLM_EVAL=1` 时跑真实模型
+
+**此前交付（2026-07-15，Phase E/F 闭环项）**：
+
+- 模型灰度 API：`POST /api/models/canary|promote|rollback`
+- `AlertSink`（Console + 可选 `SLO_ALERT_WEBHOOK_URL`）接 SLO 告警
+- 增量元数据：`diffSchemaDocuments` / `planIncrementalSync` + `POST /api/metadata/sync/diff`
+- 审核流：`GET/POST /api/metadata/review`、`POST /api/metadata/describe`（禁止 auto-certified）
+- 冷门列 `introspectColdColumns`；CI 增加 eval-gate / llm-eval（默认 skip live）
+
+**此前交付（2026-07-15，Phase E/F）**：
+
+- `SqliteAuditStore`：development 审计落库；`AuditStore` 合约测试
+- 导出 AES-256-GCM 静态加密（`EXPORT_ENCRYPTION_SECRET` / test 密钥）
+- `SloMonitor` 阈值告警 + `slo.alert` 审计；`/api/metrics` 含 alerts
+- 模型 `canary` 灰度分流（`resolveForSubject`）；`/api/models` 返回 canary 配置
+- Phase F：`scanSqliteSchema` + `gradeColumn`；`pnpm verify:eval-gate` 评测门禁
+
+**此前交付（2026-07-15，Phase E 增强）**：
+
+- 导出：`pending_approval` → approve/reject；CSV 水印；默认一次性下载；`POST /api/export/:id/approve|reject`
+- `GET /api/queries/slow`、history/audit `offset` 分页；审计 `summary|full` 字段分级
+- `policy_stale` 时 `queryCache.invalidateTenant` + `cache.invalidated` 审计
+- `SloRecorder` + `GET /api/metrics`（需 `BI_QUERY_DEBUG`）；SSE `clarification` 事件
+- 历史记录 `durationMs`；导出审计事件 `export.*`
+
+**此前交付（2026-07-15，Phase E）**：
+
+- `POST /api/analyze/stream`（SSE：`status`/`node`/`answer`/`done`）
+- `GET /api/history`、`GET /api/audit`（角色门禁）、`GET /api/models`
+- `POST/GET /api/export`（CSV 注入防护 + TTL）
+- `InMemoryAuditStore` + `StoringAuditEmitter`；权限感知 `QueryCache`；租户 `RateLimiter`
+- 请求 abort 与 `RequestContext.abortSignal` 接线；`modelVersion` 元数据
+
+**此前交付（Phase D）**：
+
+- capabilities / dialect / pool / YAML Registry / MySQL+PG Executor / datasourceRouter / SUPPORT-STATUS
 
 本文档中的能力状态统一使用以下术语：
 
@@ -18,42 +192,49 @@
 
 ### 1.1 当前能力矩阵
 
-| 模块 | 当前状态 | 已实现 | 企业级缺口 |
-|------|----------|--------|------------|
-| 工作流 | `prototype` | LangGraph：`planner → schemaRag → sqlGenerator → codeInterpreter → chartFormatter`，支持 SQL 自愈重试 | 缺可信 RequestContext、指标/澄清路由、持久化会话和完整 trace |
-| Text-to-SQL | `prototype` | LLM 生成只读 SQL，当前主要限制 SQLite 语法 | 缺逻辑查询中间层、方言编译、模型/Prompt 版本治理和真实库评测 |
-| 数据执行 | `prototype` | `SqlExecutor` contract + SQLite executor，支持行数限制、超时接口和审计调用 | 仅 SQLite；取消、连接池、只读事务、成本控制和故障隔离未生产认证 |
-| SQL 安全 | `prototype` | 只读/单语句/危险语句/表 allowlist 校验 | 当前不是完整方言 AST；缺函数、catalog、子查询、UNION、成本和作用域安全闭环 |
-| Schema RAG | `prototype` | InMemory demo retriever、分层检索、SchemaAssembler、字段裁剪和敏感字段过滤 | 缺 Qdrant、索引版本、增量同步、tombstone、alias 回滚和召回评测 |
-| 数据源路由 | `prototype` | 根据会话/权限允许列表/检索结果选择单数据源 | 仍是启发式选源；缺 Registry、置信度、冲突澄清、路由评测和多源认证 |
-| 身份与权限 | `prototype` | `AuthenticatedPrincipal`、请求体身份防伪、session ownership、静态 `AccessPolicy` | Agent 默认装配仍可回退 test principal；缺真实认证、策略服务、版本和缓存失效 |
-| 结果防泄漏 | `prototype` | 列 deny/mask、行列/响应体限制、最小聚合人数 | 缺类型感知掩码、防推断、导出策略和图表/narrative 二次检查 |
-| 审计 | `prototype` | `AuditLogger` 接口和 console logger | 缺持久化、查询、保留策略、字段分级和端到端 traceId |
-| 可视化 | `prototype` | bar / line / pie / scatter / table → ECharts option | 缺可信 narrative、数据新鲜度提示、无障碍和大结果降级 |
-| 测试 | `prototype` | 当前单元测试基线 60 通过，集成测试可选运行 | 缺 typecheck/build/contract/local E2E/artifact verify 和真实模型 evaluation 门禁 |
+| 模块 | 单机状态 | 已实现 | 本轮范围外 / 后续增强 |
+|------|----------|--------|---------------|
+| 工作流 | `verified`（单机） | LangGraph 双轨 + SQL 自愈（RAG）；Sqlite/Postgres checkpointer；`/api/analyze/stream` SSE lifecycle、heartbeat、取消与终止事件 | 多实例 checkpointer HA 不纳入本轮 |
+| Text-to-SQL | `verified`（单机） | certified 指标编译；LogicalQuery；多方言 compiler（sqlite/mysql/pg/oracle/tsql）；RAG 长尾 LLM SQL | 真实模型 live evaluation 为可选增强 |
+| 数据执行 | `verified`（单机主路径） | SQLite；MySQL/MariaDB/PG Docker live + 池/超时/rowFilters/EXPLAIN；Oracle/TSQL experimental Executor 与成本门禁代码/单测 | Oracle/TSQL 真实库 live 为可选扩展；云认证不纳入本轮 |
+| SQL 安全 | `verified`（单机多方言） | AST 拒 DML、函数白名单、列权限、只读事务、成本启发式 | 更深 catalog 级作用域治理为后续增强 |
+| Schema RAG | `verified`（单机） | Qdrant/InMemory、version/tombstone/alias、权限裁剪、增量 sync、离线评测 | 集群治理与云容量不纳入本轮 |
+| 数据源路由 | `verified`（单机） | Registry + allowlist + 向量融合选源；跨源澄清；live attach | planned 方言产品化不纳入本轮 |
+| 身份与权限 | `verified`（单机） | HeaderAuth（dev）；JWT/JWKS；Oidc 发现+会话（本机 stub）；File/Http Policy；rowFilters | 真实 IdP 运维接线为可选部署增强 |
+| 结果防泄漏 | `verified`（单机受控环境） | 类型感知 mask、行/列/UTF-8 响应限制、最小聚合人数；导出审批+加密+水印+TTL | 大规模容量证据不纳入本轮 |
+| 审计 | `verified`（单机受控环境） | Sqlite/Postgres AuditStore；traceId；`AUDIT_RETENTION_DAYS` 单机 TTL | 集群 HA 不纳入本轮 |
+| 密钥 | `verified`（单机受控环境） | Env/Test/Vault/AWS SM/Azure KV/Composite + 轮换审计钩子；生产缺省 fail closed | 跨云 HA 不纳入本轮 |
+| 可视化 | `verified`（单机） | ECharts + freshness 答语；结果降级提示 | 无障碍与大结果可视化呈现为后续增强 |
+| 测试 / 验收 | `verified`（单机） | typecheck/unit/contract/security/evaluation/local E2E；staging-acc L4 远端验收与清理 | 云 staging E2E 不纳入本轮 |
 
-### 1.2 主要缺口
+### 1.2 单机部署结论与范围外事项
 
-- 当前能力多数停留在 demo/static `prototype`，尚未形成 API → 认证 → 权限 → 检索 → SQL → 执行 → 结果策略 → 审计的生产闭环
-- 核心 Agent 仍存在 `createTestPrincipal()`、默认 tenant/dataSource 和 `createDemoRetriever()` 回退，生产环境尚未 fail closed
-- `AgentState` 与可信身份/权限运行时上下文混合，持久化恢复时存在信任边界不清的问题
-- 仍以 LLM 直接生成 SQL 为主，缺少可校验的 `LogicalQuery` / query plan 中间层
-- 仅 SQLite executor 可用，无真实 Registry、SecretProvider、连接池和多数据库 production certification
-- SQL Validator 仍是原型校验，缺方言 AST、对象/函数 allowlist、作用域约束、成本估算和只读事务闭环
-- Schema RAG 仍使用 demo 文档，无 Qdrant 版本化索引、增量扫描、失效回滚和离线召回评测
-- 无语义层 / 指标层，核心 KPI 的口径、时间、币种、单位和 fanout 无法统一证明
-- 缺数据质量与 freshness、权限感知缓存、结构化澄清、异步导出和模型/Prompt 治理
-- 测试脚本和发布门禁尚未闭环，真实集成测试默认跳过
+**单机主路径已完成**：API → 认证 → 策略 → LogicalQuery/指标或 RAG → SQLite 或 Docker MySQL/MariaDB/PG → ResultPolicy → 审计/历史；L4 staging Profile 与验收脚本已落地并通过远端验收（见 checklist）。本轮单机部署任务不再有阻塞项。
+
+**单机可选增强**：
+
+- 真实模型 live evaluation（离线门禁已通过，真实模型评测按配置启用）
+- Oracle / SQL Server 真实库 live 矩阵（需要镜像/许可；不阻塞 SQLite/MySQL/MariaDB/PostgreSQL）
+
+**本轮明确不纳入**：
+
+- 云 staging、云 TLS/mTLS/网络证据、云容量/故障/SLO 和 `production-certified` 晋级
+- planned 方言产品（AnalyticDB / PolarDB / OceanBase / DB2 / HANA 等）
+- K8s/集群、跨云密钥 HA、多实例 checkpointer 集群 HA
 
 ### 1.3 关键代码入口
 
 ```
 src/agent.ts          # LangGraph 工作流
 src/state.ts          # Agent 状态定义
-src/auth/             # 身份与会话边界原型
-src/datasource/       # Executor/Validator/DataSource 类型原型
-src/metadata/         # Schema RAG 与 SchemaAssembler 原型
-src/policy/           # AccessPolicy/ResultPolicy 原型
+src/auth/             # HeaderAuth / JWT / OIDC / staging mock
+src/bootstrap/        # local / production / 单机 staging Profile
+src/datasource/       # Executor / Registry / Validator / live attach
+src/metadata/         # Schema RAG / sync / scanner
+src/policy/           # AccessPolicy / ResultPolicy / HttpPolicyProvider
+src/audit/            # AuditStore + 保留策略
+docs/SUPPORT-STATUS.md
+docs/SINGLE-MACHINE-STAGING-CHECKLIST.md
 src/audit/            # 审计接口原型
 src/tools/generate_sql.ts
 src/tools/execute_code.ts
@@ -916,13 +1097,13 @@ order_date（时间）、city（地域）、status（过滤）
 
 | 任务 | 产出 |
 |------|------|
-| Qdrant retriever/indexer、metadata version、freshness、tombstone、alias 回滚 | `src/metadata/` |
-| 权限前置到数据源、表、列检索和 SchemaAssembler | retriever/policy |
-| 完整方言 AST：语法、对象、函数、作用域和成本校验 | `src/datasource/sql-validator.ts` |
-| 真实策略服务/配置源、policyVersion 和缓存失效 | `src/policy/` |
-| 持久化 checkpointer、会话 TTL、权限变更失效 | `src/session/` |
-| 数据质量、新鲜度、业务时区和结果告警 | metadata/result contract |
-| Schema RAG golden dataset、攻击集和召回离线评测 | `tests/evaluation/` |
+| Qdrant retriever/indexer、metadata version、freshness、tombstone、alias 回滚 | `src/metadata/` ✅ |
+| 权限前置到数据源、表、列检索和 SchemaAssembler | retriever/policy ✅ |
+| 完整方言 AST：语法、对象、函数、作用域和成本校验 | `sql-validator` + `explain-cost` ✅ |
+| 真实策略服务/配置源、policyVersion 和缓存失效 | PolicyProvider + `HttpPolicyProvider` + 会话 version 失效 ✅；查询缓存 `policy_stale` 失效 ✅ |
+| 持久化 checkpointer、会话 TTL、权限变更失效 | `SqliteCheckpointSaver`（dev）+ `PostgresCheckpointSaver`（`CHECKPOINT_DATABASE_URL`）✅ |
+| 数据质量、新鲜度、业务时区和结果告警 | freshness → meta + finalAnswer ✅ |
+| Schema RAG golden dataset、攻击集和召回离线评测 | golden + forbidden-fields + SEC-* ✅ |
 
 **验收**：
 
@@ -938,11 +1119,11 @@ order_date（时间）、city（地域）、status（过滤）
 
 | 任务 | 产出 |
 |------|------|
-| `LogicalQuery` Schema、builder、policy validator 和 dialect compiler | `src/query-plan/` |
-| 指标 YAML + `MetricRegistry` + certification workflow | `metadata/metrics/`, `src/semantic/` |
-| join graph、cardinality、fanout、时间/币种/单位规则 | `src/semantic/` |
-| 结构化澄清协议和低置信度路由 | `src/agent.ts`, API contract |
-| 5～10 个核心 certified metrics 及 golden datasets | metadata/tests |
+| `LogicalQuery` Schema、builder、policy validator 和 dialect compiler | `src/query-plan/` ✅ |
+| 指标 YAML + `MetricRegistry` + certification workflow | `metadata/metrics/` + `src/semantic/` ✅ |
+| join graph、cardinality、fanout、时间/币种/单位规则 | fanout 拒绝 + timezone/unit + BusinessCalendar（自然月/季/财年）✅ |
+| 结构化澄清协议和低置信度路由 | clarification + queryPathRouter ✅ |
+| 5～10 个核心 certified metrics 及 golden datasets | 5 个 retail certified + 确定性编译与 golden 测试 ✅ |
 
 **验收**：
 
@@ -957,11 +1138,11 @@ order_date（时间）、city（地域）、status（过滤）
 
 | 任务 | 产出 |
 |------|------|
-| `DataSourceRegistry` + SecretProvider + capability override | `src/datasource/` |
-| PostgreSQL/MySQL executor、连接池、TLS、健康检查、熔断 | executors |
-| 方言 compiler/introspection 和 conformance contract tests | dialect/tests |
-| datasourceRouter：权限、会话、置信度、冲突澄清 | `src/agent.ts` |
-| 每产品支持状态和 production certification 报告 | registry/docs |
+| `DataSourceRegistry` + SecretProvider + capability override | YAML loader + capabilities + Vault/AWS SM/Azure KV + 轮换审计钩子 ✅ |
+| PostgreSQL/MySQL executor、连接池、TLS、健康检查、熔断 | experimental executors + 熔断/租户配额 + 只读事务 + TLS 硬化 + Docker MySQL/PG TLS+CA + MySQL mTLS + MariaDB Docker live（3307）+ rowFilters + EXPLAIN 成本 ✅；`ExecutorRegistry` ✅；Oracle/SQLServer experimental Executor（可注入/可选驱动）✅；单机主路径已验收，云认证不纳入本轮 |
+| 方言 compiler/introspection 和 conformance contract tests | `compileLogicalQuery` 多方言（sqlite/mysql/pg/oracle/tsql）+ MariaDB experimental + Oracle/TSQL Executor + stub 回退 ✅ |
+| datasourceRouter：权限、会话、置信度、冲突澄清 | `routeDataSourceAsync` 启发式×向量融合 + Agent 节点 ✅ |
+| 每产品支持状态和 production certification 报告 | [SUPPORT-STATUS.md](../SUPPORT-STATUS.md) + `pnpm verify:dialect-cert` ✅ |
 
 **验收**：
 
@@ -969,7 +1150,7 @@ order_date（时间）、city（地域）、status（过滤）
 - MySQL/PostgreSQL 的安全语句、日期函数、分页、超时取消和能力声明通过 conformance tests
 - 单个慢源不会耗尽全局连接池或阻塞其他租户
 - 跨源 join 明确拒绝或澄清；不会由 LLM 自行拼接多个连接
-- 只有 `production-certified` 产品可用于生产关键查询
+- 单机 staging 按 Registry 的 `verified` / `experimental` 支持状态执行；云 `production-certified` 认证不属于本轮单机验收
 
 ### Phase E：产品化与治理（6～10 周）
 
@@ -977,19 +1158,19 @@ order_date（时间）、city（地域）、status（过滤）
 
 | 任务 | 产出 |
 |------|------|
-| SSE/流式状态、查询历史、可信 narrative | API/frontend contract |
-| 审计持久化、查询、保留策略和字段分级 | `src/audit/` |
-| 权限感知缓存、慢查询、EXPLAIN、采样和分页 | cache/executors |
-| 限流、租户并发、请求取消、SLO/告警、灰度和回滚 | runtime/ops |
-| 异步导出 job、审批、加密、TTL、水印和 CSV 注入防护 | export service |
-| Prompt/模型版本治理、真实模型 evaluation 和成本预算 | model governance |
+| SSE/流式状态、查询历史、可信 narrative | `POST /api/analyze/stream` + 历史分页 + `SqliteQueryHistoryStore`（dev）+ `PostgresQueryHistoryStore`（quasi-prod）+ SSE `clarification` ✅（prototype） |
+| 审计持久化、查询、保留策略和字段分级 | `SqliteAuditStore`（dev）+ `PostgresAuditStore`（`AUDIT_DATABASE_URL`）+ 分页 + `summary/full` 脱敏 ✅；单机 TTL 已覆盖，集群保留策略不纳入本轮 |
+| 权限感知缓存、慢查询、EXPLAIN、采样和分页 | 缓存（`metadataVersion`/`metricVersion`/`clarificationChoice` key）+ Redis L1/L2（`REDIS_URL`）+ `policy_stale` 失效 + `SlowQueryRecorder` + `/api/queries/slow` samples ✅ |
+| 限流、租户并发、请求取消、SLO/告警、灰度和回滚 | 限流 + abort + `SloMonitor` + Webhook 告警 + canary/promote/rollback API + metadata alias rollback + 本地 `test:e2e:staging` ✅ |
+| 异步导出 job、审批、加密、TTL、水印和 CSV 注入防护 | 审批 + 水印 + 一次性下载 + AES 加密 + TTL + 注入防护 ✅ |
+| Prompt/模型版本治理、真实模型 evaluation 和成本预算 | canary API + `verify:eval-gate` + `verify:llm-eval`（离线 accuracy ✅；live 可选）✅ |
 
 **验收**：
 
 - 普通用户只看到逻辑元信息；物理 SQL/表字段仅对具备 `BI_QUERY_DEBUG` 权限的管理员开放
-- 会话、缓存、导出和审计全部具备租户隔离、权限失效和多实例一致性
-- 达到上线前确定的可用性、P95/P99、并发、取消率、错误率和单请求成本 SLO
-- 使用同一 production artifact 完成 staging E2E、故障演练、metadata alias 回滚和应用版本回滚
+- 会话、缓存、导出和审计全部具备租户隔离、权限失效和单机持久化一致性
+- 完成功能级取消、错误、限流和 SLO 告警门禁；云容量与故障注入不属于本轮单机验收
+- 使用同一 production artifact 完成单机 staging E2E、metadata alias 回滚和应用版本回滚
 
 ### Phase F：规模化元数据（持续）
 
@@ -997,11 +1178,11 @@ order_date（时间）、city（地域）、status（过滤）
 
 | 任务 | 产出 |
 |------|------|
-| 自动 schema 扫描、分片增量同步和变更检测 | `src/metadata/scanner.ts` |
-| 字段 L1/L2/L3 分级、owner 和人工审核流 | `src/metadata/grading.ts` |
-| LLM 辅助描述但禁止自动 certification | 管理脚本/API |
-| 冷门列动态 introspection 兜底 | retriever |
-| 更多数据库产品映射和 executor 认证 | `src/datasource/` |
+| 自动 schema 扫描、分片增量同步和变更检测 | scanner + `sync.ts` + `runMetadataSync` + `/api/metadata/sync/run` + `pnpm sync:metadata` + `MetadataSyncScheduler` / `pnpm sync:metadata:schedule` ✅ |
+| 字段 L1/L2/L3 分级、owner 和人工审核流 | grading + `review.ts` + `/api/metadata/review` ✅ |
+| LLM 辅助描述但禁止自动 certification | `describe.ts` + `/api/metadata/describe` ✅ |
+| 冷门列动态 introspection 兜底 | `introspectColdColumns` ✅ |
+| 更多数据库产品映射和 executor 认证 | MySQL/PG/MariaDB Docker live + Oracle/SQLServer experimental Executor ✅；production-certified 待续 |
 
 **规模目标**：1,000 张 ADS 表约 24,000 文档；检索 Step 1～3 的 P99 目标小于 100ms，最终门槛以实际容量测试为准。
 
@@ -1090,7 +1271,8 @@ apps/bi-analyst/
 POST /api/analyze
 {
   "query": "查一下北京用户上个月的订单总额",
-  "sessionId": "sess-abc"
+  "sessionId": "sess-abc",
+  "clarificationChoice": "range.last_month"
 }
 ```
 
@@ -1236,6 +1418,7 @@ install --frozen-lockfile
 - 发布产物附带 commit SHA、dependency lock hash、config schema version、metadata version 和评测报告
 - 回滚使用上一份已验证 artifact 与兼容的 metadata alias，不临时修改生产代码
 - 测试失败不得通过“仅在 CI 跳过”绕过；如需隔离 flaky case，必须有负责人、期限和阻断级跟踪项
+- 当前单机 CI 已落地为 `verify`、`integration-services`、`staging-image` 三个 job；最后一个 job 只在前两个全绿后构建 production image，并对该镜像执行边界检查与 L4 health/analyze/认证/审计验收
 
 ---
 
@@ -1287,16 +1470,30 @@ install --frozen-lockfile
 
 ---
 
-## 11. 下一步行动（建议立即开始）
+## 11. 单机部署范围收口状态
 
-1. **先建测试门禁**：补齐 `typecheck`、`test:unit`、`test:contract`、`test:integration:local`、`test:e2e:local`、`build`、`verify:artifact`，并接入 CI
-2. 定义 `APP_ENV`、Zod 配置 Schema、`RuntimeProfile` 和 Composition Root；为四种环境先写装配测试
-3. 增加最小 HTTP API 和 `RequestContext`，将 principal/完整 policy/deadline 从可持久化 Graph State 迁出
-4. 实现 `development/test` 本地全栈 Profile；实现 `staging/production` fail-closed Profile，禁止任何 demo/default fallback
-5. 为现有 `AuthenticatedPrincipal`、session ownership、`AccessPolicy` 和 audit 增加端到端传递测试，消除 `subjectId=unknown` 等占位行为
-6. 创建 `SecretProvider`、`DataSourceConfig`、`SqlExecutor` 和 `SchemaRetriever` contract tests，固化 SQLite/InMemory 原型边界
-7. 先写 SQL 攻击集，再实现方言 AST、对象/函数/作用域/成本校验、数据库侧 cancellation 和只读事务
-8. 选择第一个真实目标数据库，按 Phase B 完成 Qdrant、权限、执行、freshness、审计和回滚闭环后，再启动指标层和多数据源
+本节只统计本轮单机部署目标：一台服务器、同一 `dist` 产物、SQLite 与 Docker MySQL/MariaDB/PostgreSQL、单机 staging L1～L4。该范围内的任务项已全部完成；云、集群和生产认证不作为本轮完成条件。
+
+### 单机范围任务（全部完成）
+
+- [x] 测试与发布门禁：`typecheck`、`build`；unit **310 通过 / 12 跳过**（服务开启时 310/9）；contract **24**；security **25**；evaluation **4**；`test:integration:local` **16/16**；service integration **23**；live DB **20**；local E2E **6**；staging rollout E2E **3**；artifact **108 文件**；schema eval **4/4**；路由 **20/20**；离线 LLM eval **5/5**；`verify:dialect-cert` `localPass=true`。
+- [x] 可信运行时边界：`APP_ENV` 配置校验、RuntimeProfile、Composition Root、`RequestContext`、认证主体与 session ownership 校验，以及 development/test/staging/production 装配路径。
+- [x] 单源企业闭环：API → 认证 → 策略 → Schema RAG / LogicalQuery → SQL 校验与执行 → ResultPolicy → 审计/历史；包含 SQL 攻击集、contract tests、freshness 和权限前置裁剪。
+- [x] 逻辑查询与指标层：5 个 certified metrics、方言 compiler、结构化澄清、数据源路由 Top-1 95% 自动门禁、BusinessCalendar 和缓存版本失效。
+- [x] 单机多数据源：Docker MySQL、MariaDB、PostgreSQL live 能力，连接池、超时、取消、只读事务、rowFilters、TLS/mTLS、EXPLAIN 成本门禁和 ExecutorRegistry。
+- [x] 产品化与治理：JWT/JWKS、OIDC 会话绑定、SecretProvider 适配器、审计 TTL、Postgres History/Checkpointer、Redis 缓存、SSE lifecycle、导出保护、限流、SLO/告警、模型与元数据回滚。
+- [x] 单机元数据工具链：schema scanner、分级与审核、live schema `--dry-run/--approve` 闭环、增量同步、冷门列 introspection、调度脚本和 alias 回滚。
+- [x] 单机 staging L4：2026-07-22 同一构建产物远端验收通过（历史镜像 477MB）；2026-07-28 新 production image 本机构建约 138MB，确认无项目测试/demo 数据，`staging` health、MySQL/PG live analyze、审计查询、伪造身份拒绝和资源清理均通过。
+
+### 本轮不纳入的范围
+
+| 范围 | 状态 | 说明 |
+|------|------|------|
+| Oracle / SQL Server 真实 Docker 或外部实例 live | 单机可选扩展 | Executor、编译、成本门禁和注入客户端测试已完成；真实 live 需要镜像/许可，不阻塞主路径 |
+| 云 staging、云 TLS/mTLS/网络证据、云容量/故障/SLO | 暂缓 | 属于云运维验收，不属于单机部署 |
+| `production-certified` 晋级签字 | 暂缓 | 单机允许 `verified` / `experimental`，不在本轮声明生产认证 |
+| K8s/集群、多实例 checkpointer HA、跨云密钥 HA | 暂缓 | 分布式部署能力，按用户当前范围不实施 |
+| AnalyticDB、PolarDB、OceanBase、DB2、HANA 等 planned 方言 live | 暂缓 | 不属于本轮单机数据库矩阵 |
 
 ---
 

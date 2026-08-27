@@ -18,6 +18,13 @@ export interface AccessPolicy {
   deniedTables?: string[];
   allowedColumns?: Record<string, string[]>;
   deniedColumns?: Record<string, string[]>;
+  minAggregationCount?: number;
+  historyRetentionDays?: number;
+  exportControls?: {
+    requireApproval?: boolean;
+    approvalRowThreshold?: number;
+    sensitiveColumns?: string[];
+  };
   rowFilters?: TypedPolicyPredicate[];
   maskRules?: Array<{
     table: string;
@@ -26,7 +33,7 @@ export interface AccessPolicy {
   }>;
 }
 
-/** 开发/demo 默认权限：允许全部 demo 数据源 */
+/** 开发/demo 默认权限：允许 demo 表，不强制列白名单以兼容自由 SQL 原型路径 */
 export function createDefaultAccessPolicy(
   principal: { subjectId: string; tenantId: string; roles?: string[] },
   allowedDataSourceIds: string[] = ["ecommerce_sqlite", "default", "test"],
@@ -37,5 +44,6 @@ export function createDefaultAccessPolicy(
     policyVersion: "1",
     roles: principal.roles ?? ["analyst"],
     allowedDataSourceIds,
+    allowedTables: ["users", "orders"],
   };
 }

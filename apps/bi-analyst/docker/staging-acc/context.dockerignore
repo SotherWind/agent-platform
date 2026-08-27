@@ -1,0 +1,11 @@
+# staging-acc build context — keep small
+**/node_modules
+**/dist
+**/.git
+**/*.md
+**/tests
+**/scripts/_*.txt
+**/docker
+**/.env
+**/.env.*
+**/data/*.db-journal

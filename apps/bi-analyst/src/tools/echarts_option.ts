@@ -23,7 +23,7 @@ function cartesianOption(
     series: valueColumns.map((col) => ({
       name: col,
       type: chartType,
-      data: rows.map((row) => row[col]),
+      data: rows.map((row) => toChartValue(row[col])),
     })),
   };
 }
@@ -43,7 +43,7 @@ function pieOption(
         radius: "50%",
         data: rows.map((row) => ({
           name: String(row[dimCol]),
-          value: row[valueCol],
+          value: toChartValue(row[valueCol]),
         })),
         emphasis: {
           itemStyle: {
@@ -73,7 +73,7 @@ function scatterOption(
       series: [
         {
           type: "scatter",
-          data: rows.map((row) => [row[xCol], row[yCol]]),
+          data: rows.map((row) => [toChartValue(row[xCol]), toChartValue(row[yCol])]),
         },
       ],
     };
@@ -88,10 +88,18 @@ function scatterOption(
     series: [
       {
         type: "scatter",
-        data: rows.map((row) => row[valueCol]),
+        data: rows.map((row) => toChartValue(row[valueCol])),
       },
     ],
   };
+}
+
+function toChartValue(value: unknown): unknown {
+  if (typeof value === "string" && value.trim() !== "") {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return value;
 }
 
 function tableSpec(

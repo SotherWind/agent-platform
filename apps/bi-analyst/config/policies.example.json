@@ -1,0 +1,77 @@
+{
+  "policies": [
+    {
+      "subjectId": "*",
+      "tenantId": "tenant-1",
+      "policyVersion": "1",
+      "roles": [
+        "analyst"
+      ],
+      "allowedDataSourceIds": [
+        "ecommerce_sqlite",
+        "default",
+        "test",
+        "sales_mysql",
+        "analytics_pg",
+        "sales_mariadb"
+      ],
+      "allowedTables": [
+        "users",
+        "orders"
+      ],
+      "deniedTables": [],
+      "allowedColumns": {
+        "users": [
+          "id",
+          "name",
+          "city",
+          "created_at"
+        ],
+        "orders": [
+          "id",
+          "user_id",
+          "amount",
+          "status",
+          "created_at"
+        ]
+      },
+      "maskRules": [
+        {
+          "table": "users",
+          "column": "name",
+          "strategy": "partial"
+        }
+      ],
+      "minAggregationCount": 2,
+      "historyRetentionDays": 30,
+      "exportControls": {
+        "requireApproval": true,
+        "approvalRowThreshold": 1000,
+        "sensitiveColumns": ["email", "phone", "token", "password"]
+      }
+    },
+    {
+      "subjectId": "user-restricted",
+      "tenantId": "tenant-1",
+      "policyVersion": "2",
+      "roles": [
+        "viewer"
+      ],
+      "allowedDataSourceIds": [
+        "ecommerce_sqlite"
+      ],
+      "allowedTables": [
+        "users"
+      ],
+      "deniedTables": [
+        "orders"
+      ],
+      "allowedColumns": {
+        "users": [
+          "id",
+          "city"
+        ]
+      }
+    }
+  ]
+}

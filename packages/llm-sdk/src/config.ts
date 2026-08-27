@@ -1,4 +1,4 @@
-import { LLMModelType, type EnvLike, type LLMConfig } from "./types";
+import { LLMModelType, type EnvLike, type LLMConfig } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 

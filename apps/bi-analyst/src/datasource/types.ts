@@ -31,12 +31,17 @@ export interface ConnectionConfig {
   host?: string;
   port?: number;
   database?: string;
+  user?: string;
   /** SQLite 文件路径 */
   filePath?: string;
   secretRef?: SecretReference;
   /** PolarDB / OceanBase 兼容模式 */
   mode?: "mysql" | "oracle" | "pg";
   ssl?: boolean;
+  rejectUnauthorized?: boolean;
+  ca?: string;
+  cert?: string;
+  key?: string;
 }
 
 export interface DbCapabilities {
@@ -69,6 +74,16 @@ export interface SqlExecutionRequest {
   requestId?: string;
   timeoutMs: number;
   maxRows?: number;
+  allowedTables?: string[];
+  allowedColumns?: Record<string, string[]>;
+  deniedColumns?: Record<string, string[]>;
+  requireFilterTables?: string[];
+  maxJoins?: number;
+  maxCteDepth?: number;
+  /** 行级过滤谓词（由执行器改写并参数绑定） */
+  rowFilters?: import("../policy/access-policy.js").TypedPolicyPredicate[];
+  /** 预编译 SQL 的绑定参数（指标路径） */
+  params?: (string | number)[];
 }
 
 export interface ExecutionStats {

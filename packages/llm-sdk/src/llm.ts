@@ -1,5 +1,5 @@
 import { ChatOpenAI, type ChatOpenAIFields } from "@langchain/openai";
-import { loadLLMConfig } from "./config";
+import { loadLLMConfig } from "./config.js";
 import {
   LLMModelType,
   type CachedLLM,
@@ -7,7 +7,7 @@ import {
   type LLMDefaultCallOptions,
   type LLMInstance,
   type RemoveLLMCacheOptions,
-} from "./types";
+} from "./types.js";
 
 interface LLMCacheEntry {
   llm: LLMInstance;

@@ -1,0 +1,110 @@
+# 本地 MySQL + MariaDB + PostgreSQL（Schema 扫描 / Executor / TLS / mTLS 集成测试）
+# 用法：
+#   pnpm docker:certs
+#   docker compose -f docker/docker-compose.yml up -d
+#   pnpm test:live-db
+# MariaDB 宿主机端口 3307（避免与 MySQL 3306 冲突）
+services:
+  bi-qdrant:
+    image: qdrant/qdrant:v1.18.3@sha256:0bd98fa7977f1e75694779359ca4e212822e5a71334e28421182f72f209d5286
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - bi-qdrant-data:/qdrant/storage
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "timeout 2 bash -c '</dev/tcp/127.0.0.1/6333'",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  bi-mysql:
+    image: mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+    container_name: bi-analyst-mysql
+    entrypoint: ["/bin/bash", "/wrap-entrypoint.sh"]
+    command:
+      [
+        "--character-set-server=utf8mb4",
+        "--collation-server=utf8mb4_unicode_ci",
+        "--init-connect=SET NAMES utf8mb4",
+        "--ssl-ca=/var/lib/mysql-certs/ca.pem",
+        "--ssl-cert=/var/lib/mysql-certs/server-cert.pem",
+        "--ssl-key=/var/lib/mysql-certs/server-key.pem",
+      ]
+    environment:
+      MYSQL_ROOT_PASSWORD: bi_root_dev
+      MYSQL_DATABASE: retail
+      MYSQL_USER: bi
+      MYSQL_PASSWORD: bi_dev
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+      - ./mysql/certs:/certs-ro:ro
+      - ./mysql/wrap-entrypoint.sh:/wrap-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ubi", "-pbi_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  bi-mariadb:
+    image: mariadb:11.4@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+    container_name: bi-analyst-mariadb
+    command:
+      [
+        "--character-set-server=utf8mb4",
+        "--collation-server=utf8mb4_unicode_ci",
+        "--init-connect=SET NAMES utf8mb4",
+      ]
+    environment:
+      MYSQL_ROOT_PASSWORD: bi_root_dev
+      MYSQL_DATABASE: retail
+      MYSQL_USER: bi
+      MYSQL_PASSWORD: bi_dev
+      MARIADB_AUTO_UPGRADE: "1"
+    ports:
+      - "127.0.0.1:3307:3306"
+    volumes:
+      - ./mariadb/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "healthcheck.sh",
+          "--connect",
+          "--innodb_initialized",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 25s
+
+  bi-postgres:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    container_name: bi-analyst-postgres
+    entrypoint: ["/bin/sh", "/wrap-entrypoint.sh"]
+    environment:
+      POSTGRES_DB: retail
+      POSTGRES_USER: bi
+      POSTGRES_PASSWORD: bi_dev
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./postgres/certs:/certs-ro:ro
+      - ./postgres/wrap-entrypoint.sh:/wrap-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bi -d retail"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  bi-qdrant-data:

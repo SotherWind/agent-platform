@@ -6,10 +6,12 @@ export interface AuthenticatedPrincipal {
   claims: Record<string, unknown>;
 }
 
-/** 前端/API 业务请求体 —— 只收 query 和 sessionId */
+/** 前端/API 业务请求体 —— 只收 query、sessionId 与结构化澄清选项 */
 export interface AnalyzeRequest {
   query: string;
   sessionId?: string;
+  /** 上一轮澄清选项 ID，如 datasource.xxx / metric.xxx / range.last_7d */
+  clarificationChoice?: string;
 }
 
 /** 会话记录（checkpointer 复合键：tenantId + subjectId + sessionId） */

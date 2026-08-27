@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequestContext } from "../../src/runtime/request-context.js";
-import { createTestPrincipal } from "../../src/auth/principal.js";
+import { createTestPrincipal } from "../helpers/principal.js";
 import { createDefaultAccessPolicy } from "../../src/policy/access-policy.js";
 import { getTestRuntimeProfile } from "../helpers/profile.js";
 import { test, section } from "../helpers/runner.js";

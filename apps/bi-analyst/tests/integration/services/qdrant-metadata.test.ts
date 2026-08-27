@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createTestPrincipal } from "../../../src/auth/principal.js";
+import { createTestPrincipal } from "../../helpers/principal.js";
 import { createDefaultAccessPolicy } from "../../../src/policy/access-policy.js";
 import { createDemoRetriever } from "../../../src/metadata/demo-documents.js";
 import { evaluateGoldenQuery } from "../../../src/metadata/evaluation.js";

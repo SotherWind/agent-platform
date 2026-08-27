@@ -1,12 +1,114 @@
 # 数据源配置示例（无真实密码）
+# Development example only. Production artifacts never package ./data/ecommerce.db.
+# For deployed SQLite, point filePath at an existing operator-mounted absolute path.
 datasources:
   - id: ecommerce_sqlite
     label: 电商演示库
     domain: retail
     productType: SQLite
     dialectFamily: sqlite
+    supportStatus: verified
     connection:
       filePath: ./data/ecommerce.db
     exposedSchemas:
       - main
     defaultSchema: main
+
+  - id: sales_mysql
+    label: 销售 MySQL（实验）
+    domain: retail
+    productType: MySQL
+    dialectFamily: mysql
+    supportStatus: experimental
+    connection:
+      host: 127.0.0.1
+      port: 3306
+      user: bi
+      database: sales
+      ssl: false
+      secretRef:
+        provider: env
+        key: MYSQL_SALES_PASSWORD
+    exposedSchemas:
+      - ads
+      - dws
+    defaultSchema: ads
+    capabilities:
+      identifierQuote: "`"
+      paginationStyle: limit
+
+  - id: analytics_pg
+    label: 分析 PostgreSQL（实验）
+    domain: finance
+    productType: PostgreSQL
+    dialectFamily: postgresql
+    supportStatus: experimental
+    connection:
+      host: 127.0.0.1
+      port: 5432
+      user: bi
+      database: analytics
+      ssl: false
+      secretRef:
+        provider: env
+        key: PG_ANALYTICS_PASSWORD
+    exposedSchemas:
+      - ads
+    defaultSchema: ads
+
+  - id: sales_mariadb
+    label: 销售 MariaDB（实验，复用 mysql 方言）
+    domain: retail
+    productType: MariaDB
+    dialectFamily: mysql
+    supportStatus: experimental
+    connection:
+      host: 127.0.0.1
+      port: 3307
+      user: bi
+      database: sales
+      ssl: false
+      secretRef:
+        provider: env
+        key: MARIADB_SALES_PASSWORD
+    exposedSchemas:
+      - ads
+    defaultSchema: ads
+
+  - id: erp_oracle
+    label: ERP Oracle（experimental；需注入客户端或 oracledb）
+    domain: finance
+    productType: Oracle
+    dialectFamily: oracle
+    supportStatus: experimental
+    connection:
+      host: 127.0.0.1
+      port: 1521
+      user: bi
+      database: ORCL
+      ssl: true
+      secretRef:
+        provider: vault
+        key: bi/oracle/password
+    exposedSchemas:
+      - ADS
+    defaultSchema: ADS
+
+  - id: crm_sqlserver
+    label: CRM SQL Server（experimental；需注入客户端或 tedious）
+    domain: crm
+    productType: SQLServer
+    dialectFamily: tsql
+    supportStatus: experimental
+    connection:
+      host: 127.0.0.1
+      port: 1433
+      user: bi
+      database: crm
+      ssl: true
+      secretRef:
+        provider: azure-kv
+        key: bi-sqlserver-password
+    exposedSchemas:
+      - ads
+    defaultSchema: ads

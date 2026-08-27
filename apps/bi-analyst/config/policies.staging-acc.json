@@ -1,0 +1,34 @@
+{
+  "policies": [
+    {
+      "subjectId": "*",
+      "tenantId": "tenant-1",
+      "policyVersion": "1",
+      "roles": ["analyst"],
+      "allowedDataSourceIds": [
+        "sales_mysql",
+        "analytics_pg"
+      ],
+      "allowedTables": ["users", "orders"],
+      "deniedTables": [],
+      "allowedColumns": {
+        "users": ["id", "name", "city", "created_at"],
+        "orders": ["id", "user_id", "amount", "status", "created_at"]
+      },
+      "maskRules": [
+        {
+          "table": "users",
+          "column": "name",
+          "strategy": "partial"
+        }
+      ],
+      "minAggregationCount": 2,
+      "historyRetentionDays": 7,
+      "exportControls": {
+        "requireApproval": true,
+        "approvalRowThreshold": 1000,
+        "sensitiveColumns": ["email", "phone", "token", "password"]
+      }
+    }
+  ]
+}

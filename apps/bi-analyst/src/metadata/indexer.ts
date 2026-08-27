@@ -3,6 +3,7 @@ import {
   enrichDocumentForIndex,
   documentToPayload,
   markTombstone,
+  payloadToDocument,
 } from "./index-utils.js";
 import { toStablePointId } from "./point-id.js";
 import type { EmbeddingProvider } from "./embeddings.js";
@@ -36,6 +37,27 @@ export class SchemaIndexer {
   constructor(private readonly options: SchemaIndexerOptions) {
     this.schemaVersion =
       options.schemaVersion ?? DEFAULT_SCHEMA_VERSION;
+  }
+
+  get collectionAlias(): string {
+    return this.options.collectionAlias;
+  }
+
+  getSchemaVersion(): string {
+    return this.schemaVersion;
+  }
+
+  async getAliasTarget(): Promise<string | null> {
+    return this.options.backend.getAliasTarget(this.options.collectionAlias);
+  }
+
+  async readCurrentDocuments(): Promise<SchemaDocument[]> {
+    const target = await this.getAliasTarget();
+    if (!target) return [];
+    const points = await this.options.backend.listPoints(target);
+    return points
+      .filter((point) => point.payload.deleted !== true)
+      .map((point) => payloadToDocument(point.payload));
   }
 
   private collectionName(suffix?: string): string {
@@ -141,5 +163,16 @@ export class SchemaIndexer {
       previousCollection,
       indexedCount: indexResult.indexedCount,
     };
+  }
+
+  /** 将 alias 切回上一 collection（灰度/坏索引回滚） */
+  async rollbackAlias(previousCollection: string): Promise<void> {
+    if (!previousCollection.trim()) {
+      throw new Error("无可回滚的 collection");
+    }
+    await this.options.backend.setAlias(
+      this.options.collectionAlias,
+      previousCollection,
+    );
   }
 }

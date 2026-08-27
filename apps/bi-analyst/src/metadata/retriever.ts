@@ -33,7 +33,17 @@ export interface SchemaRetriever {
 
 /** 内存检索器：测试与无 Qdrant 场景 */
 export class InMemorySchemaRetriever implements SchemaRetriever {
-  constructor(private readonly documents: SchemaDocument[]) {}
+  private readonly documents: SchemaDocument[];
+
+  constructor(documents: SchemaDocument[]) {
+    // Demo/staging metadata is loaded directly rather than through SchemaIndexer.
+    // Preserve source timestamps while recording when this snapshot was indexed.
+    const indexedAt = new Date().toISOString();
+    this.documents = documents.map((doc) => ({
+      ...doc,
+      indexedAt: doc.indexedAt ?? indexedAt,
+    }));
+  }
 
   async search(
     query: string,
@@ -102,35 +112,47 @@ export async function retrieveRelevantSchema(
     "sqlite") as DialectFamily;
   const domain = sourceDoc?.domain ?? "retail";
 
-  const tableDocs = await retriever.search(
-    query,
-    { docType: "table", datasourceId, limit: 5 },
-    policy,
-  );
+  const [tableDocs, relationDocs, metricDocs] = await Promise.all([
+    retriever.search(
+      query,
+      { docType: "table", datasourceId, limit: 5 },
+      policy,
+    ),
+    retriever.search(
+      query,
+      { docType: "relation", datasourceId, limit: 5 },
+      policy,
+    ),
+    retriever.search(
+      query,
+      { docType: "metric", datasourceId, limit: 3 },
+      policy,
+    ),
+  ]);
   const tableNames = tableDocs.map((d) => d.table!).filter(Boolean);
 
-  const columnDocs = await retriever.search(
-    query,
-    {
-      docType: "column",
-      datasourceId,
-      tables: tableNames,
-      limit: 30,
-    },
-    policy,
-  );
-
-  const relationDocs = await retriever.search(
-    query,
-    { docType: "relation", datasourceId, limit: 5 },
-    policy,
-  );
-
-  const metricDocs = await retriever.search(
-    query,
-    { docType: "metric", datasourceId, limit: 3 },
-    policy,
-  );
+  const [columnDocs, columnGroupDocs] = await Promise.all([
+    retriever.search(
+      query,
+      {
+        docType: "column",
+        datasourceId,
+        tables: tableNames,
+        limit: 30,
+      },
+      policy,
+    ),
+    retriever.search(
+      query,
+      {
+        docType: "column_group",
+        datasourceId,
+        tables: tableNames,
+        limit: 30,
+      },
+      policy,
+    ),
+  ]);
 
   return {
     datasourceId,
@@ -140,6 +162,7 @@ export async function retrieveRelevantSchema(
       ...(sourceDoc ? [sourceDoc] : []),
       ...tableDocs,
       ...columnDocs,
+      ...columnGroupDocs,
       ...relationDocs,
       ...metricDocs,
     ],

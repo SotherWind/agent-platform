@@ -5,3 +5,7 @@ export {
   type SessionStore,
 } from "./store.js";
 export { SqliteCheckpointSaver } from "./sqlite-checkpointer.js";
+export {
+  PostgresCheckpointSaver,
+  resolveCheckpointConnectionFromEnv,
+} from "./postgres-checkpointer.js";

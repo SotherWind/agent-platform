@@ -29,7 +29,7 @@ export async function testSchemaRagIntegration() {
           runtimeProfile: getTestRuntimeProfile(),
         });
         const result = await graph.invoke(
-          { messages: [new HumanMessage("北京用户订单总额")] },
+          { messages: [new HumanMessage("查询北京用户的订单明细和对应城市")] },
           { configurable: { thread_id: "integration-schema-rag" } },
         );
 

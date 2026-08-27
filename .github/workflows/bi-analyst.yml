@@ -1,0 +1,254 @@
+name: bi-analyst
+
+on:
+  push:
+    paths:
+      - "apps/bi-analyst/**"
+      - "packages/llm-sdk/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/bi-analyst.yml"
+  pull_request:
+    paths:
+      - "apps/bi-analyst/**"
+      - "packages/llm-sdk/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/bi-analyst.yml"
+
+concurrency:
+  group: bi-analyst-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/bi-analyst
+    env:
+      APP_ENV: test
+      BI_SQLITE_SYNC: "1"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: pnpm/action-setup@0c17529a66aca453f9227af23103ed11469b1e47
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.14.0
+          cache: pnpm
+      - name: Install
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+      - name: Build llm-sdk
+        working-directory: .
+        run: pnpm --filter @agent-platform/llm-sdk build
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Unit
+        run: pnpm test:unit
+      - name: Contract
+        run: pnpm test:contract
+      - name: Security
+        run: pnpm test:security
+      - name: Evaluation
+        run: pnpm test:evaluation
+      - name: Integration local
+        run: pnpm test:integration:local
+      - name: E2E local
+        run: pnpm test:e2e:local
+      - name: E2E staging rollout
+        run: pnpm test:e2e:staging
+      - name: Schema retrieval gate
+        run: pnpm verify:eval-gate
+      - name: Datasource routing gate
+        run: pnpm verify:routing
+      - name: Offline LLM gate
+        run: pnpm verify:llm-eval
+        env:
+          ENABLE_LIVE_LLM_EVAL: "0"
+      - name: Dialect certification gate
+        run: pnpm verify:dialect-cert
+      - name: Build production artifact
+        run: pnpm build
+      - name: Verify production artifact boundary
+        run: pnpm verify:artifact
+
+  integration-services:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/bi-analyst
+    env:
+      APP_ENV: test
+      BI_SQLITE_SYNC: "1"
+      QDRANT_URL: http://127.0.0.1:6333
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: pnpm/action-setup@0c17529a66aca453f9227af23103ed11469b1e47
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.14.0
+          cache: pnpm
+      - name: Install
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+      - name: Generate database test certificates
+        run: pnpm docker:certs
+      - name: Start MySQL, MariaDB, and PostgreSQL
+        run: docker compose -f docker/docker-compose.yml up -d --wait --wait-timeout 180
+      - name: Start Qdrant
+        run: |
+          docker run -d --name bi-analyst-qdrant -p 127.0.0.1:6333:6333 qdrant/qdrant:v1.18.3@sha256:0bd98fa7977f1e75694779359ca4e212822e5a71334e28421182f72f209d5286
+          for attempt in {1..60}; do
+            curl -fsS http://127.0.0.1:6333/healthz && exit 0
+            sleep 2
+          done
+          exit 1
+      - name: Live service integration
+        run: pnpm test:integration:services
+      - name: Cleanup services
+        if: always()
+        run: |
+          docker rm -f bi-analyst-qdrant 2>/dev/null || true
+          docker compose -f docker/docker-compose.yml down -v
+
+  staging-image:
+    runs-on: ubuntu-latest
+    needs: [verify, integration-services]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: pnpm/action-setup@0c17529a66aca453f9227af23103ed11469b1e47
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.14.0
+          cache: pnpm
+      - name: Install certificate generator dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Generate staging database certificates
+        run: pnpm --dir apps/bi-analyst docker:certs
+      - name: Build the single-machine staging image
+        run: >-
+          docker build
+          -f apps/bi-analyst/docker/staging-acc/Dockerfile
+          -t bi-analyst-staging-acc:${{ github.sha }}
+          .
+      - name: Assert image excludes test and demo content
+        run: >-
+          docker run --rm --entrypoint sh
+          bi-analyst-staging-acc:${{ github.sha }}
+          -c 'test ! -e /app/data/ecommerce.db &&
+          test ! -e /app/tests &&
+          ! find /app -path /app/node_modules -prune -o -type f
+          \( -name "*.test.*" -o -name "*fixture*" \) -print | grep -q .'
+      - name: Configure staging acceptance secrets
+        run: |
+          set -euo pipefail
+          suffix="${GITHUB_SHA:0:12}"
+          mysql_root="ci_root_${suffix}"
+          mysql_password="ci_mysql_${suffix}"
+          postgres_password="ci_pg_${suffix}"
+          {
+            echo "BI_ACC_MYSQL_ROOT_PASSWORD=$mysql_root"
+            echo "BI_ACC_MYSQL_PASSWORD=$mysql_password"
+            echo "BI_ACC_POSTGRES_PASSWORD=$postgres_password"
+            echo "BI_ACC_AUDIT_DATABASE_URL=postgresql://bi:${postgres_password}@bi-acc-postgres:5432/retail"
+            echo "BI_STAGING_MOCK_ADMIN_KEY=$(openssl rand -hex 32)"
+          } >> "$GITHUB_ENV"
+      - name: Start staging databases
+        run: >-
+          docker compose
+          -f apps/bi-analyst/docker/staging-acc/docker-compose.yml
+          up -d --wait --wait-timeout 180
+          bi-acc-mysql bi-acc-postgres
+      - name: Start the production image
+        run: |
+          docker run -d --name bi-acc-app-ci \
+            --network bi-analyst-staging-acc_default \
+            -p 127.0.0.1:13000:3000 \
+            -v "$PWD/apps/bi-analyst/docker/staging-acc/mysql-certs/ca.pem:/app/certs/mysql-ca.pem:ro" \
+            -v "$PWD/apps/bi-analyst/docker/staging-acc/postgres-certs/ca.pem:/app/certs/postgres-ca.pem:ro" \
+            -e APP_ENV=staging \
+            -e BI_SINGLE_MACHINE_STAGING=1 \
+            -e BI_STAGING_MOCK_AUTH=1 \
+            -e BI_ALLOW_INMEMORY_RETRIEVER=1 \
+            -e BI_ALLOW_ENV_SECRETS=1 \
+            -e BI_ATTACH_LIVE_DATASOURCES=1 \
+            -e BI_ATTACH_LIVE_ON_STAGING=1 \
+            -e BI_STAGING_MOCK_ADMIN_KEY="$BI_STAGING_MOCK_ADMIN_KEY" \
+            -e DATASOURCE_REGISTRY_PATH=/app/config/datasources.staging-acc.yaml \
+            -e POLICY_CONFIG_PATH=/app/config/policies.staging-acc.json \
+            -e AUTH_ISSUER=https://bi-analyst.staging.local/ \
+            -e AUTH_AUDIENCE=bi-analyst \
+            -e AUDIT_DATABASE_URL="$BI_ACC_AUDIT_DATABASE_URL" \
+            -e AUDIT_RETENTION_DAYS=7 \
+            -e BI_MYSQL_HOST=bi-acc-mysql \
+            -e BI_MYSQL_PORT=3306 \
+            -e BI_MYSQL_USER=bi \
+            -e BI_MYSQL_PASSWORD="$BI_ACC_MYSQL_PASSWORD" \
+            -e BI_MYSQL_TLS_CA_PATH=/app/certs/mysql-ca.pem \
+            -e BI_MYSQL_DATABASE=retail \
+            -e BI_MYSQL_DATASOURCE_ID=sales_mysql \
+            -e BI_PG_HOST=bi-acc-postgres \
+            -e BI_PG_PORT=5432 \
+            -e BI_PG_USER=bi \
+            -e BI_PG_PASSWORD="$BI_ACC_POSTGRES_PASSWORD" \
+            -e BI_PG_TLS_CA_PATH=/app/certs/postgres-ca.pem \
+            -e BI_PG_DATABASE=retail \
+            -e BI_PG_DATASOURCE_ID=analytics_pg \
+            -e USE_FAKE_EMBEDDINGS=true \
+            bi-analyst-staging-acc:${{ github.sha }}
+      - name: Verify production-image L4 behavior
+        run: |
+          set -euo pipefail
+          for attempt in {1..60}; do
+            if curl -fsS http://127.0.0.1:13000/health >/tmp/bi-health.json; then
+              break
+            fi
+            if [[ "$attempt" -eq 60 ]]; then
+              docker logs bi-acc-app-ci --tail 120
+              exit 1
+            fi
+            sleep 2
+          done
+          grep -Eq '"environment"[[:space:]]*:[[:space:]]*"staging"' /tmp/bi-health.json
+          grep -Eq 'sales_mysql' /tmp/bi-health.json
+          grep -Eq 'analytics_pg' /tmp/bi-health.json
+
+          TOKEN_JSON=$(docker exec bi-acc-app-ci node -e \
+            "fetch('http://127.0.0.1:3000/api/staging/mock-token',{method:'POST',headers:{'content-type':'application/json','x-bi-staging-admin-key':process.env.BI_STAGING_MOCK_ADMIN_KEY},body:JSON.stringify({subjectId:'user-dev',tenantId:'tenant-1',roles:['analyst','BI_QUERY_DEBUG','BI_AUDIT_READER']})}).then(async r=>{if(!r.ok) process.exit(1); process.stdout.write(await r.text())})")
+          TOKEN=$(printf '%s' "$TOKEN_JSON" | node -e \
+            "process.stdout.write(JSON.parse(require('fs').readFileSync(0,'utf8')).access_token)")
+
+          for source in sales_mysql analytics_pg; do
+            code=$(curl -sS -o "/tmp/bi-${source}.json" -w '%{http_code}' \
+              -X POST http://127.0.0.1:13000/api/analyze \
+              -H 'content-type: application/json' \
+              -H "authorization: Bearer $TOKEN" \
+              -d "{\"query\":\"GMV\",\"clarificationChoice\":\"datasource.${source}\"}")
+            test "$code" = "200"
+            grep -Eq 'finalAnswer|clarification|needsClarification' "/tmp/bi-${source}.json"
+            grep -Eq '"requestId"[[:space:]]*:[[:space:]]*"[^"]+"' "/tmp/bi-${source}.json"
+            grep -Eq '"traceId"[[:space:]]*:[[:space:]]*"[^"]+"' "/tmp/bi-${source}.json"
+          done
+
+          forged_code=$(curl -sS -o /tmp/bi-forged.json -w '%{http_code}' \
+            -X POST http://127.0.0.1:13000/api/analyze \
+            -H 'content-type: application/json' \
+            -d '{"query":"orders","userId":"hacker","tenantId":"x"}')
+          test "$forged_code" = "401"
+
+          curl -fsS 'http://127.0.0.1:13000/api/audit?limit=20' \
+            -H "authorization: Bearer $TOKEN" >/tmp/bi-audit.json
+          node -e \
+            "const d=JSON.parse(require('fs').readFileSync('/tmp/bi-audit.json','utf8')); if(!Array.isArray(d.items)||d.items.length<1) process.exit(1)"
+      - name: Cleanup staging image acceptance
+        if: always()
+        run: |
+          docker rm -f bi-acc-app-ci 2>/dev/null || true
+          docker compose \
+            -f apps/bi-analyst/docker/staging-acc/docker-compose.yml \
+            down -v

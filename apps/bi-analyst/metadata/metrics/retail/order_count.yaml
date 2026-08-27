@@ -1,0 +1,35 @@
+metric: order_count
+version: 1
+label: 订单数量
+datasourceId: ecommerce_sqlite
+status: certified
+owner: retail-bi
+factTable: orders
+entityKey: id
+measure:
+  field: id
+  aggregation: count
+  additive: true
+timeDimension: created_at
+timezone: Asia/Shanghai
+unit: count
+defaultFilters: []
+dimensions:
+  - name: status
+    table: orders
+    column: status
+  - name: city
+    joinPath: order_user
+    table: users
+    column: city
+synonyms:
+  - 订单数
+  - 下单量
+joinGraph:
+  - name: order_user
+    from: orders
+    to: users
+    fromKey: user_id
+    toKey: id
+    cardinality: many_to_one
+freshnessSlaHours: 24

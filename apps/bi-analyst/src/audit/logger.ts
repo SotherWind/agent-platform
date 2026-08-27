@@ -20,14 +20,8 @@ export interface AuditLogger {
 /** 默认审计：写入 stderr（Phase 4 可替换为持久化） */
 export class ConsoleAuditLogger implements AuditLogger {
   log(event: AuditEvent): void {
-    const { rawError, sql, ...safe } = event;
+    const { rawError: _rawError, sql: _sql, query: _query, ...safe } = event;
     console.info("[audit]", JSON.stringify(safe));
-    if (rawError) {
-      console.debug("[audit:raw]", rawError);
-    }
-    if (sql) {
-      console.debug("[audit:sql]", sql);
-    }
   }
 }
 

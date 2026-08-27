@@ -43,11 +43,16 @@ export function computeMetadataFreshness(
 
   let latestMs: number | null = null;
   let missingTimestampCount = 0;
+  let missingSourceTimestampCount = 0;
   const schemaVersions = new Set<string>();
 
   for (const doc of documents) {
-    const ts =
-      parseTimestamp(doc.sourceUpdatedAt) ?? parseTimestamp(doc.indexedAt);
+    const sourceMs = parseTimestamp(doc.sourceUpdatedAt);
+    const indexedMs = parseTimestamp(doc.indexedAt);
+    if (sourceMs === null && indexedMs !== null) {
+      missingSourceTimestampCount += 1;
+    }
+    const ts = sourceMs ?? indexedMs;
     if (ts === null) {
       missingTimestampCount += 1;
     } else if (latestMs === null || ts > latestMs) {
@@ -58,6 +63,11 @@ export function computeMetadataFreshness(
 
   if (missingTimestampCount > 0) {
     warnings.push(`${missingTimestampCount} 条元数据缺少 sourceUpdatedAt/indexedAt`);
+  }
+  if (missingSourceTimestampCount > 0) {
+    warnings.push(
+      `${missingSourceTimestampCount} 条元数据缺少 sourceUpdatedAt，新鲜度按 indexedAt 推断`,
+    );
   }
   if (schemaVersions.size > 1) {
     warnings.push(

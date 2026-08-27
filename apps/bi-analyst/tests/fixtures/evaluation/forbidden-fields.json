@@ -1,0 +1,17 @@
+{
+  "description": "禁止字段进入 prompt 评测集",
+  "cases": [
+    {
+      "id": "EVAL-FORBIDDEN-001",
+      "query": "北京用户订单总额",
+      "forbiddenColumns": ["phone", "password", "id_card"],
+      "requiredColumns": ["city", "amount", "user_id"]
+    },
+    {
+      "id": "EVAL-FORBIDDEN-002",
+      "query": "各城市用户数量",
+      "forbiddenColumns": ["phone", "password"],
+      "requiredColumns": ["city"]
+    }
+  ]
+}

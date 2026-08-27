@@ -36,6 +36,7 @@ export interface VectorIndexBackend {
   getAliasTarget(alias: string): Promise<string | null>;
   deleteCollection(name: string): Promise<void>;
   getPoint(collection: string, id: string): Promise<VectorPoint | null>;
+  listPoints(collection: string): Promise<VectorPoint[]>;
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -148,6 +149,15 @@ export class InMemoryVectorIndexBackend implements VectorIndexBackend {
   async getPoint(collection: string, id: string): Promise<VectorPoint | null> {
     const resolved = this.resolveCollection(collection);
     return this.collections.get(resolved)?.get(id) ?? null;
+  }
+
+  async listPoints(collection: string): Promise<VectorPoint[]> {
+    const resolved = this.resolveCollection(collection);
+    return [...(this.collections.get(resolved)?.values() ?? [])].map((point) => ({
+      ...point,
+      vector: [...point.vector],
+      payload: { ...point.payload },
+    }));
   }
 }
 

@@ -1,0 +1,118 @@
+# 单机 staging 验收专用编排
+# 项目名：bi-analyst-staging-acc（清理时按项目名删除，勿动其他容器）
+# 端口避开常见占用：13000 / 18306 / 18432
+# L4：APP_ENV=staging + mock JWKS + InMemory retriever + Registry + live MySQL/PG
+
+name: bi-analyst-staging-acc
+
+services:
+  bi-acc-mysql:
+    image: mysql:8.0.36@sha256:a532724022429812ec797c285c1b540a644c15e248579c6bfdf12a8fbaab4964
+    container_name: bi-acc-mysql
+    entrypoint: ["/bin/bash", "/wrap-entrypoint.sh"]
+    command:
+      [
+        "--character-set-server=utf8mb4",
+        "--collation-server=utf8mb4_unicode_ci",
+        "--init-connect=SET NAMES utf8mb4",
+        "--ssl-ca=/var/lib/mysql-certs/ca.pem",
+        "--ssl-cert=/var/lib/mysql-certs/server-cert.pem",
+        "--ssl-key=/var/lib/mysql-certs/server-key.pem",
+      ]
+    labels:
+      bi.analyst.staging.acc: "1"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${BI_ACC_MYSQL_ROOT_PASSWORD:?BI_ACC_MYSQL_ROOT_PASSWORD is required}
+      MYSQL_DATABASE: retail
+      MYSQL_USER: bi
+      MYSQL_PASSWORD: ${BI_ACC_MYSQL_PASSWORD:?BI_ACC_MYSQL_PASSWORD is required}
+    ports:
+      - "127.0.0.1:18306:3306"
+    volumes:
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
+      - ./mysql-certs:/certs-ro:ro
+      - ./mysql-wrap-entrypoint.sh:/wrap-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ubi", "-p$${MYSQL_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 25s
+
+  bi-acc-postgres:
+    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    container_name: bi-acc-postgres
+    entrypoint: ["/bin/sh", "/wrap-entrypoint.sh"]
+    labels:
+      bi.analyst.staging.acc: "1"
+    environment:
+      POSTGRES_DB: retail
+      POSTGRES_USER: bi
+      POSTGRES_PASSWORD: ${BI_ACC_POSTGRES_PASSWORD:?BI_ACC_POSTGRES_PASSWORD is required}
+    ports:
+      - "127.0.0.1:18432:5432"
+    volumes:
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+      - ./postgres-certs:/certs-ro:ro
+      - ./postgres-wrap-entrypoint.sh:/wrap-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bi -d retail"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  bi-acc-app:
+    build:
+      context: ./context
+      dockerfile: Dockerfile
+    image: bi-analyst-staging-acc:app
+    container_name: bi-acc-app
+    labels:
+      bi.analyst.staging.acc: "1"
+    environment:
+      APP_ENV: staging
+      PORT: "3000"
+      BI_SQLITE_SYNC: "1"
+      BI_SINGLE_MACHINE_STAGING: "1"
+      BI_STAGING_MOCK_AUTH: "1"
+      BI_ALLOW_INMEMORY_RETRIEVER: "1"
+      BI_ALLOW_ENV_SECRETS: "1"
+      BI_ATTACH_LIVE_DATASOURCES: "1"
+      BI_ATTACH_LIVE_ON_STAGING: "1"
+      DATASOURCE_REGISTRY_PATH: /app/config/datasources.staging-acc.yaml
+      POLICY_CONFIG_PATH: /app/config/policies.staging-acc.json
+      AUTH_ISSUER: https://bi-analyst.staging.local/
+      AUTH_AUDIENCE: bi-analyst
+      AUDIT_DATABASE_URL: ${BI_ACC_AUDIT_DATABASE_URL:?BI_ACC_AUDIT_DATABASE_URL is required}
+      AUDIT_RETENTION_DAYS: "7"
+      AUDIT_PURGE_INTERVAL_MS: "3600000"
+      BI_MYSQL_PASSWORD: ${BI_ACC_MYSQL_PASSWORD:?BI_ACC_MYSQL_PASSWORD is required}
+      BI_PG_PASSWORD: ${BI_ACC_POSTGRES_PASSWORD:?BI_ACC_POSTGRES_PASSWORD is required}
+      BI_MYSQL_TLS_CA_PATH: /app/certs/mysql-ca.pem
+      BI_PG_TLS_CA_PATH: /app/certs/postgres-ca.pem
+      BI_STAGING_MOCK_ADMIN_KEY: ${BI_STAGING_MOCK_ADMIN_KEY:?BI_STAGING_MOCK_ADMIN_KEY is required}
+      ANALYSIS_STATE_ENCRYPTION_SECRET: ${BI_ACC_STATE_ENCRYPTION_SECRET:?BI_ACC_STATE_ENCRYPTION_SECRET is required}
+      USE_FAKE_EMBEDDINGS: "true"
+    ports:
+      - "127.0.0.1:13000:3000"
+    volumes:
+      - ./mysql-certs/ca.pem:/app/certs/mysql-ca.pem:ro
+      - ./postgres-certs/ca.pem:/app/certs/postgres-ca.pem:ro
+    depends_on:
+      bi-acc-mysql:
+        condition: service_healthy
+      bi-acc-postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s

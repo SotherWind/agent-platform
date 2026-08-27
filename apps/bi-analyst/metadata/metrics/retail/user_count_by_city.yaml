@@ -1,0 +1,27 @@
+metric: user_count_by_city
+version: 1
+label: 各城市用户数
+datasourceId: ecommerce_sqlite
+status: certified
+owner: retail-bi
+factTable: users
+entityKey: id
+measure:
+  field: id
+  aggregation: count
+  additive: true
+timeDimension: created_at
+timezone: Asia/Shanghai
+unit: count
+defaultFilters: []
+dimensions:
+  - name: city
+    table: users
+    column: city
+synonyms:
+  - 城市用户数
+  - 各城市用户数量
+  - 用户分布
+joinGraph: []
+freshnessSlaHours: 24
+requireTimeRange: false

@@ -6,7 +6,14 @@ export type AppErrorCode =
   | "missing_request_context"
   | "deadline_exceeded"
   | "internal_error"
-  | "validation_error";
+  | "validation_error"
+  | "rate_limited"
+  | "budget_exceeded"
+  | "not_found"
+  | "approval_required"
+  | "payload_too_large"
+  | "request_timeout"
+  | "conflict";
 
 export class AppError extends Error {
   constructor(

@@ -1,23 +1,22 @@
-import { loadAppConfig, summarizeConfig, isLocalEnvironment } from "../config/env.js";
-import type { AppConfig, RuntimeProfile } from "../config/types.js";
-import { summarizeEmbeddingConfig } from "../metadata/embedding-factory.js";
-import {
-  createLocalRuntimeProfile,
-  type LocalRuntimeBundle,
-} from "./local-profile.js";
+import { isLocalEnvironment, loadAppConfig } from "../config/env.js";
+import { createLocalRuntimeProfile } from "./local-profile.js";
 import { createProductionRuntimeProfile } from "./production-profile.js";
+import {
+  hydrateSqliteForSingleMachine,
+  type BootstrapResult,
+} from "./runtime-common.js";
 
-export interface BootstrapResult {
-  config: AppConfig;
-  profile: RuntimeProfile;
-  localResources?: LocalRuntimeBundle["resources"];
-}
+export type { BootstrapResult } from "./runtime-common.js";
+export {
+  attachLiveDataSources,
+  logBootstrapSummary,
+} from "./runtime-common.js";
 
+/** Development/test composition root. Deployable builds use production-runtime. */
 export function bootstrapRuntime(
   env: NodeJS.ProcessEnv = process.env,
 ): BootstrapResult {
   const config = loadAppConfig(env);
-
   if (isLocalEnvironment(config.environment)) {
     const local = createLocalRuntimeProfile(config);
     return {
@@ -28,16 +27,5 @@ export function bootstrapRuntime(
   }
 
   const profile = createProductionRuntimeProfile(config, {}, env);
-  return { config, profile };
-}
-
-export function logBootstrapSummary(result: BootstrapResult): void {
-  console.info(
-    "[bi-analyst] bootstrap",
-    JSON.stringify({
-      ...summarizeConfig(result.config),
-      embedding: summarizeEmbeddingConfig(),
-      dataSources: result.profile.dataSourceRegistry.list().map((s) => s.id),
-    }),
-  );
+  return hydrateSqliteForSingleMachine(config, profile, env);
 }

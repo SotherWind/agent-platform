@@ -28,6 +28,9 @@ export const ExecutionResultSchema = z.object({
     })
     .optional(),
   warnings: z.array(z.string()).optional(),
+  /** Result policy changed the returned shape or payload size. */
+  degraded: z.boolean().optional(),
+  degradationReasons: z.array(z.string()).optional(),
   error: z.string().nullable().optional(),
   /** 脱敏后的失败分类，供重试路由使用 */
   failureKind: z

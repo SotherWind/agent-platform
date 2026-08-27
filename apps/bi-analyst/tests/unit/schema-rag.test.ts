@@ -6,7 +6,7 @@ import {
 import { assembleSchema } from "../../src/metadata/schema-assembler.js";
 import { DEMO_SCHEMA_DOCUMENTS } from "../../src/metadata/demo-documents.js";
 import { createDefaultAccessPolicy } from "../../src/policy/access-policy.js";
-import { createTestPrincipal } from "../../src/auth/principal.js";
+import { createTestPrincipal } from "../helpers/principal.js";
 import { test, section } from "../helpers/runner.js";
 
 export async function testSchemaRag() {
@@ -38,6 +38,57 @@ export async function testSchemaRag() {
     assert.ok(
       allColumns.some((c) => c.endsWith(".user_id")),
       "应包含 user_id (join key)",
+    );
+  });
+
+  await test("RAG assembly keeps column_group dimensions", async () => {
+    const docs = [
+      {
+        id: "ds:test",
+        docType: "datasource" as const,
+        datasourceId: "test",
+        domain: "retail",
+        dialectFamily: "sqlite" as const,
+        reviewStatus: "approved" as const,
+        content: "source",
+      },
+      {
+        id: "test.users",
+        docType: "table" as const,
+        datasourceId: "test",
+        domain: "retail",
+        dialectFamily: "sqlite" as const,
+        table: "users",
+        reviewStatus: "approved" as const,
+        content: "users",
+      },
+      {
+        id: "test.users.city",
+        docType: "column_group" as const,
+        datasourceId: "test",
+        domain: "retail",
+        dialectFamily: "sqlite" as const,
+        table: "users",
+        column: "city",
+        fieldRole: "dimension" as const,
+        reviewStatus: "approved" as const,
+        content: "city",
+      },
+    ];
+    const retrieved = await retrieveRelevantSchema(
+      new InMemorySchemaRetriever(docs),
+      "city",
+      createDefaultAccessPolicy(createTestPrincipal(), ["test"]),
+    );
+    const schema = assembleSchema({
+      datasourceId: retrieved.datasourceId,
+      dialectFamily: retrieved.dialectFamily,
+      documents: retrieved.documents,
+    });
+    assert.ok(
+      schema.tables.some((table) =>
+        table.columns.some((column) => column.name === "city"),
+      ),
     );
   });
 

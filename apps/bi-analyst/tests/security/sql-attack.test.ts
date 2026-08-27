@@ -12,6 +12,10 @@ interface AttackCase {
   sql: string;
   expectValid: boolean;
   allowedTables?: string[];
+  allowedColumns?: Record<string, string[]>;
+  maxJoins?: number;
+  maxCteDepth?: number;
+  requireFilterTables?: string[];
 }
 
 interface AttackFixture {
@@ -34,6 +38,10 @@ export async function testSqlAttackSet() {
     await test(`${attackCase.id} ${attackCase.description}`, () => {
       const result = validateSql(attackCase.sql, {
         allowedTables: attackCase.allowedTables,
+        allowedColumns: attackCase.allowedColumns,
+        maxJoins: attackCase.maxJoins,
+        maxCteDepth: attackCase.maxCteDepth,
+        requireFilterTables: attackCase.requireFilterTables,
       });
       assert.equal(
         result.valid,

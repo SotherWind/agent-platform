@@ -15,6 +15,9 @@ build/
 
 # Local config (keep *.example.* templates)
 **/config/datasources.yaml
+**/config/policies.json
+!**/config/policies.example.json
+!**/config/policies.staging-acc.json
 
 # Logs
 logs/
@@ -38,6 +41,14 @@ tmp/
 temp/
 .cache/
 .turbo/
+
+# Docker TLS test certs (regenerate via pnpm docker:certs)
+apps/bi-analyst/docker/.cert-work/
+apps/bi-analyst/docker/mysql/certs/*.pem
+apps/bi-analyst/docker/postgres/certs/*
+!apps/bi-analyst/docker/mysql/certs/README.md
+!apps/bi-analyst/docker/mysql/certs/gen-certs.sh
+!apps/bi-analyst/docker/postgres/certs/.gitkeep
 
 # Archives
 *.zip

@@ -4,6 +4,7 @@ import { buildChartSpec } from "../../src/tools/echarts_option";
 import type { ExecutionResult } from "../../src/entities";
 import { test, section } from "../helpers/runner";
 import { sampleRows } from "../helpers/fixtures";
+import { suggestChartConfigLocal } from "../../src/runtime/local-chart.js";
 
 export async function testChartBuilding() {
   section("图表构建 (buildChartSpec / formatChartTool)");
@@ -82,5 +83,40 @@ export async function testChartBuilding() {
     assert.equal(spec.type, "bar");
     assert.equal(spec.title, "工具封装测试");
     assert.ok(spec.option);
+  });
+
+  await test("时间序列优先推荐 line 而不是 bar", () => {
+    const suggestion = suggestChartConfigLocal("按月份展示订单趋势", {
+      columns: ["time_month", "order_count"],
+      rows: [
+        { time_month: "2024-01", order_count: 3 },
+        { time_month: "2024-02", order_count: 2 },
+      ],
+      isEmpty: false,
+    });
+    assert.equal(suggestion.chartType, "line");
+  });
+
+  await test("数据库 decimal 字符串也识别为数值趋势", () => {
+    const suggestion = suggestChartConfigLocal("按季度统计销售额趋势", {
+      columns: ["time_quarter", "order_total_amount"],
+      rows: [
+        { time_quarter: "2026-Q2", order_total_amount: "150.50" },
+        { time_quarter: "2026-Q3", order_total_amount: "898.99" },
+      ],
+      isEmpty: false,
+    });
+    assert.equal(suggestion.chartType, "line");
+
+    const spec = buildChartSpec("line", "季度趋势", {
+      columns: ["time_quarter", "order_total_amount"],
+      rows: [
+        { time_quarter: "2026-Q2", order_total_amount: "150.50" },
+        { time_quarter: "2026-Q3", order_total_amount: "898.99" },
+      ],
+      isEmpty: false,
+    });
+    const series = spec.option!.series as { data: unknown[] }[];
+    assert.deepEqual(series[0].data, [150.5, 898.99]);
   });
 }

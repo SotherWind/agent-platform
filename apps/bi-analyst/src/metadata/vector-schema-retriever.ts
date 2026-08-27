@@ -23,6 +23,13 @@ export interface VectorSchemaRetrieverOptions {
 /** 基于向量索引的 SchemaRetriever，与 InMemory 共享 policy/scoring 语义 */
 export class VectorSchemaRetriever implements SchemaRetriever {
   private readonly recallMultiplier: number;
+  private readonly queryVectorCache = new Map<
+    string,
+    { vector: number[]; expiresAt: number }
+  >();
+  private readonly queryVectorInFlight = new Map<string, Promise<number[]>>();
+  private readonly queryVectorTtlMs = 5 * 60 * 1000;
+  private readonly queryVectorMaxEntries = 128;
 
   constructor(private readonly options: VectorSchemaRetrieverOptions) {
     this.recallMultiplier = options.recallMultiplier ?? 3;
@@ -36,7 +43,7 @@ export class VectorSchemaRetriever implements SchemaRetriever {
     const limit = options.limit ?? 10;
     const recallLimit = Math.max(limit * this.recallMultiplier, limit);
 
-    const [queryVector] = await this.options.embeddings.embed([query]);
+    const queryVector = await this.getQueryVector(query);
     const hits = await this.options.backend.search(
       this.options.collectionAlias,
       queryVector!,
@@ -64,6 +71,38 @@ export class VectorSchemaRetriever implements SchemaRetriever {
       options,
       candidates,
     );
+  }
+
+  private async getQueryVector(query: string): Promise<number[]> {
+    const key = query.trim();
+    const cached = this.queryVectorCache.get(key);
+    if (cached) {
+      if (cached.expiresAt > Date.now()) return cached.vector;
+      this.queryVectorCache.delete(key);
+    }
+
+    const inFlight = this.queryVectorInFlight.get(key);
+    if (inFlight) return inFlight;
+
+    const pending = this.options.embeddings
+      .embed([query])
+      .then(([vector]) => {
+        if (!vector) throw new Error("Embedding provider returned no vector");
+        if (this.queryVectorCache.size >= this.queryVectorMaxEntries) {
+          const oldest = this.queryVectorCache.keys().next().value;
+          if (oldest) this.queryVectorCache.delete(oldest);
+        }
+        this.queryVectorCache.set(key, {
+          vector,
+          expiresAt: Date.now() + this.queryVectorTtlMs,
+        });
+        return vector;
+      })
+      .finally(() => {
+        this.queryVectorInFlight.delete(key);
+      });
+    this.queryVectorInFlight.set(key, pending);
+    return pending;
   }
 }
 

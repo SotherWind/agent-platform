@@ -4,7 +4,8 @@ import {
   InMemorySessionStore,
   SqliteSessionStore,
 } from "../../src/session/store.js";
-import { createTestPrincipal, AuthError } from "../../src/auth/principal.js";
+import { AuthError } from "../../src/auth/principal.js";
+import { createTestPrincipal } from "../helpers/principal.js";
 import { test, section } from "../helpers/runner.js";
 
 export async function testSessionStore() {

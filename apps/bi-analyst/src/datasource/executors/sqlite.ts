@@ -10,6 +10,11 @@ import {
   type SqlFailureKind,
 } from "../../errors/sql-failure.js";
 import { validateSql } from "../sql-validator.js";
+import {
+  assessExplainQueryPlan,
+  explainSqliteQueryPlan,
+} from "../explain-cost.js";
+import { applyRowFilters } from "../../policy/row-filter-rewrite.js";
 import type {
   HealthStatus,
   SqlExecutionRequest,
@@ -26,6 +31,13 @@ export interface SqliteExecutorOptions {
   dataSourceId: string;
   maxRows?: number;
   allowedTables?: string[];
+  allowedColumns?: Record<string, string[]>;
+  requireFilterTables?: string[];
+  maxJoins?: number;
+  maxCteDepth?: number;
+  /** 启用 EXPLAIN QUERY PLAN 成本门禁（默认 true） */
+  enableExplainCost?: boolean;
+  rejectUnfilteredScan?: boolean;
 }
 
 interface WorkerResult {
@@ -35,14 +47,31 @@ interface WorkerResult {
   error?: string;
 }
 
-/** SQLite SqlExecutor：校验 → 超时 Worker 执行 → 审计脱敏 */
+/** SQLite SqlExecutor：校验 → EXPLAIN 成本 → 超时 Worker 执行 → 审计脱敏 */
 export class SqliteExecutor implements SqlExecutor {
   private readonly maxRows: number;
   private readonly allowedTables?: string[];
+  private readonly allowedColumns?: Record<string, string[]>;
+  private readonly requireFilterTables?: string[];
+  private readonly maxJoins?: number;
+  private readonly maxCteDepth?: number;
+  private readonly enableExplainCost: boolean;
+  private readonly rejectUnfilteredScan: boolean;
 
   constructor(private readonly options: SqliteExecutorOptions) {
     this.maxRows = options.maxRows ?? 10_000;
     this.allowedTables = options.allowedTables;
+    this.allowedColumns = options.allowedColumns;
+    this.requireFilterTables = options.requireFilterTables;
+    this.maxJoins = options.maxJoins;
+    this.maxCteDepth = options.maxCteDepth;
+    this.enableExplainCost = options.enableExplainCost !== false;
+    this.rejectUnfilteredScan = options.rejectUnfilteredScan !== false;
+  }
+
+  async explain(sql: string): Promise<string> {
+    const plan = explainSqliteQueryPlan(this.options.db, sql);
+    return plan.map((row) => String(row.detail ?? "")).join("\n");
   }
 
   async execute(
@@ -50,32 +79,114 @@ export class SqliteExecutor implements SqlExecutor {
     signal: AbortSignal,
   ): Promise<ExecutionResult> {
     const startTime = Date.now();
-    const validation = validateSql(request.sql, {
-      dialectFamily: "sqlite",
+    const validatorOpts = {
+      dialectFamily: "sqlite" as const,
       maxRows: request.maxRows ?? this.maxRows,
-      allowedTables: this.allowedTables,
-    });
+      allowedTables: request.allowedTables ?? this.allowedTables,
+      allowedColumns: request.allowedColumns ?? this.allowedColumns,
+      deniedColumns: request.deniedColumns,
+      requireFilterTables:
+        request.requireFilterTables ?? this.requireFilterTables,
+      maxJoins: request.maxJoins ?? this.maxJoins,
+      maxCteDepth: request.maxCteDepth ?? this.maxCteDepth,
+    };
 
-    if (!validation.valid) {
-      const sanitized = sanitizeSqlError(
-        validation.reason ?? "policy_rejected",
-        "policy_rejected",
+    let sql: string;
+    let params: (string | number)[] = request.params ?? [];
+
+    if (request.rowFilters?.length) {
+      const rewrite = applyRowFilters(
+        request.sql,
+        request.rowFilters,
+        validatorOpts,
       );
-      auditLog({
-        requestId: request.requestId ?? crypto.randomUUID(),
-        subjectId: request.subjectId ?? "unknown",
-        tenantId: request.tenantId,
-        sessionId: request.sessionId,
-        dataSourceId: request.dataSourceId,
-        sql: request.sql,
-        durationMs: Date.now() - startTime,
-        failureKind: sanitized.kind,
-        rawError: validation.reason,
-      });
-      return emptyErrorResult(sanitized.kind, sanitized.safeMessage);
+      if (!rewrite.ok || !rewrite.sql) {
+        const sanitized = sanitizeSqlError(
+          rewrite.reason ?? "policy_rejected",
+          "policy_rejected",
+        );
+        auditLog({
+          requestId: request.requestId ?? crypto.randomUUID(),
+          subjectId: request.subjectId ?? "unknown",
+          tenantId: request.tenantId,
+          sessionId: request.sessionId,
+          dataSourceId: request.dataSourceId,
+          sql: request.sql,
+          durationMs: Date.now() - startTime,
+          failureKind: sanitized.kind,
+          rawError: rewrite.reason,
+        });
+        return emptyErrorResult(sanitized.kind, sanitized.safeMessage);
+      }
+      sql = rewrite.sql;
+      params = [...(rewrite.params ?? []), ...params];
+    } else {
+      const validation = validateSql(request.sql, validatorOpts);
+      if (!validation.valid) {
+        const kind = validation.failureKind ?? "policy_rejected";
+        const sanitized = sanitizeSqlError(
+          validation.reason ?? kind,
+          kind,
+        );
+        auditLog({
+          requestId: request.requestId ?? crypto.randomUUID(),
+          subjectId: request.subjectId ?? "unknown",
+          tenantId: request.tenantId,
+          sessionId: request.sessionId,
+          dataSourceId: request.dataSourceId,
+          sql: request.sql,
+          durationMs: Date.now() - startTime,
+          failureKind: sanitized.kind,
+          rawError: validation.reason,
+        });
+        return emptyErrorResult(sanitized.kind, sanitized.safeMessage);
+      }
+      sql = validation.normalizedSql!;
     }
 
-    const sql = validation.normalizedSql!;
+    if (this.enableExplainCost) {
+      try {
+        const planRows = explainSqliteQueryPlan(this.options.db, sql, params);
+        const cost = assessExplainQueryPlan(planRows, {
+          originalSql: sql,
+          rejectUnfilteredScan: this.rejectUnfilteredScan,
+        });
+        if (!cost.allowed) {
+          const sanitized = sanitizeSqlError(
+            cost.reason ?? "cost_rejected",
+            "cost_rejected",
+          );
+          auditLog({
+            requestId: request.requestId ?? crypto.randomUUID(),
+            subjectId: request.subjectId ?? "unknown",
+            tenantId: request.tenantId,
+            sessionId: request.sessionId,
+            dataSourceId: request.dataSourceId,
+            sql,
+            durationMs: Date.now() - startTime,
+            failureKind: sanitized.kind,
+            rawError: cost.reason,
+          });
+          return emptyErrorResult(sanitized.kind, sanitized.safeMessage);
+        }
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err);
+        const kind = classifySqlError(raw);
+        const sanitized = sanitizeSqlError(raw, kind);
+        auditLog({
+          requestId: request.requestId ?? crypto.randomUUID(),
+          subjectId: request.subjectId ?? "unknown",
+          tenantId: request.tenantId,
+          sessionId: request.sessionId,
+          dataSourceId: request.dataSourceId,
+          sql,
+          durationMs: Date.now() - startTime,
+          failureKind: sanitized.kind,
+          rawError: raw,
+        });
+        return emptyErrorResult(sanitized.kind, sanitized.safeMessage);
+      }
+    }
 
     if (signal.aborted) {
       return emptyErrorResult("timeout", "查询已取消");
@@ -84,12 +195,13 @@ export class SqliteExecutor implements SqlExecutor {
     try {
       const workerResult =
         process.env.BI_SQLITE_SYNC === "1"
-          ? executeSqliteSync(this.options.db, sql)
+          ? executeSqliteSync(this.options.db, sql, params)
           : await runInWorker(
               this.options.db.name ?? ":memory:",
               sql,
               request.timeoutMs,
               signal,
+              params,
             );
 
       if (workerResult.error) {
@@ -172,7 +284,9 @@ export class SqliteExecutor implements SqlExecutor {
   }
 
   async close(): Promise<void> {
-    this.options.db.close();
+    if (this.options.db.open) {
+      this.options.db.close();
+    }
   }
 }
 
@@ -195,10 +309,11 @@ function runInWorker(
   sql: string,
   timeoutMs: number,
   signal: AbortSignal,
+  params: (string | number)[] = [],
 ): Promise<WorkerResult> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(WORKER_PATH, {
-      workerData: { dbPath, sql },
+      workerData: { dbPath, sql, params },
     });
 
     let settled = false;
@@ -243,11 +358,14 @@ function runInWorker(
 export function executeSqliteSync(
   db: Database.Database,
   sql: string,
+  params: (string | number)[] = [],
 ): WorkerResult {
   const start = Date.now();
   try {
     const stmt = db.prepare(sql);
-    const rows = stmt.all() as Record<string, unknown>[];
+    const rows = (
+      params.length > 0 ? stmt.all(...params) : stmt.all()
+    ) as Record<string, unknown>[];
     const columns =
       rows.length > 0 ? Object.keys(rows[0] as object) : [];
     return { rows, columns, durationMs: Date.now() - start };

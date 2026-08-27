@@ -9,7 +9,7 @@ import { InMemoryVectorIndexBackend } from "../../src/metadata/vector-backend.js
 import { SchemaIndexer } from "../../src/metadata/indexer.js";
 import { VectorSchemaRetriever } from "../../src/metadata/vector-schema-retriever.js";
 import { DEMO_SCHEMA_DOCUMENTS } from "../../src/metadata/demo-documents.js";
-import { createTestPrincipal } from "../../src/auth/principal.js";
+import { createTestPrincipal } from "../helpers/principal.js";
 import { createDefaultAccessPolicy } from "../../src/policy/access-policy.js";
 import { test, section } from "../helpers/runner.js";
 
@@ -125,6 +125,41 @@ export async function testMetadataIndexer() {
       limit: 1,
     }, policy);
     assert.equal(docs[0]?.content, updatedDoc.content);
+  });
+
+  await test("rollbackAlias 切回上一 collection", async () => {
+    const backend = new InMemoryVectorIndexBackend();
+    const embeddings = new DeterministicEmbeddingProvider();
+    const alias = "bi-alias-rollback";
+    const indexer = new SchemaIndexer({
+      backend,
+      embeddings,
+      collectionAlias: alias,
+    });
+
+    const first = await indexer.rebuildWithAliasSwap([SAMPLE_DOC]);
+    const updatedDoc = {
+      ...SAMPLE_DOC,
+      content: "坏索引内容",
+    };
+    const second = await indexer.rebuildWithAliasSwap([updatedDoc]);
+    assert.ok(second.previousCollection);
+    await indexer.rollbackAlias(second.previousCollection!);
+    assert.equal(await indexer.getAliasTarget(), first.newCollection);
+
+    const retriever = new VectorSchemaRetriever({
+      backend,
+      embeddings,
+      collectionAlias: alias,
+    });
+    const principal = createTestPrincipal();
+    const policy = createDefaultAccessPolicy(principal, ["test"]);
+    const docs = await retriever.search("城市", {
+      docType: "column",
+      datasourceId: "test",
+      limit: 1,
+    }, policy);
+    assert.equal(docs[0]?.content, SAMPLE_DOC.content);
   });
 
   await test("VectorSchemaRetriever 索引 demo 文档后可检索", async () => {

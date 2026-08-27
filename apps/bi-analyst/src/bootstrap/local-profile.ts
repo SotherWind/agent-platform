@@ -4,10 +4,43 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppConfig } from "../config/types.js";
 import type { RuntimeProfile } from "../config/types.js";
+import {
+  FilePolicyProvider,
+  InMemoryPolicyProvider,
+  withAuthorizedDataSources,
+  type PolicyProvider,
+} from "../policy/policy-provider.js";
 import { createDefaultAccessPolicy } from "../policy/access-policy.js";
-import { createTestPrincipal } from "../auth/principal.js";
-import { ConsoleAuditLogger } from "../audit/logger.js";
+import { createHttpPolicyProviderFromEnv } from "../policy/http-policy-provider.js";
+import { InMemoryAuditStore } from "../audit/store.js";
+import { SqliteAuditStore } from "../audit/sqlite-store.js";
+import { createLocalAuditSink } from "../audit/sink.js";
+import { InMemoryQueryHistoryStore } from "../history/store.js";
+import { SqliteQueryHistoryStore } from "../history/sqlite-store.js";
+import { PostgresQueryHistoryStore } from "../history/postgres-store.js";
+import { createQueryCacheFromEnv } from "../cache/redis-query-cache.js";
+import { TenantRateLimiter } from "../runtime/rate-limit.js";
+import { InMemoryExportJobStore } from "../export/csv.js";
+import { createDefaultModelRegistry } from "../governance/model-registry.js";
+import { createDefaultSloMonitor } from "../runtime/slo.js";
+import { createAlertSink } from "../runtime/alert-sink.js";
+import { InMemorySlowQueryRecorder } from "../runtime/slow-query.js";
+import {
+  InMemoryAnalysisFeedbackStore,
+  PersistentAnalysisFeedbackStore,
+} from "../governance/feedback.js";
+import {
+  InMemoryAnalysisJobStore,
+  PersistentAnalysisJobStore,
+} from "../runtime/analysis-jobs.js";
+import { createDefaultTelemetry } from "../runtime/telemetry.js";
+import { InMemoryMetadataReviewStore } from "../metadata/review.js";
+import { DeterministicEmbeddingProvider } from "../metadata/embeddings.js";
+import { InMemoryVectorIndexBackend } from "../metadata/vector-backend.js";
+import { SchemaIndexer } from "../metadata/indexer.js";
+import { emitAuditEvent, setAuditEmitter } from "../audit/events.js";
 import { DEMO_SCHEMA_DOCUMENTS, createDemoRetriever } from "../metadata/demo-documents.js";
+import { setAuditLogger } from "../audit/logger.js";
 import {
   createMetadataStack,
   LazySchemaRetriever,
@@ -22,6 +55,7 @@ import {
 import { EnvSecretProvider, TestSecretProvider } from "../datasource/secrets.js";
 import { InMemoryDataSourceRegistry } from "../datasource/registry.js";
 import { createSqliteDataSourceConfig } from "../datasource/types.js";
+import { buildSqliteExecutorRegistry } from "../datasource/executor-factory.js";
 import { createDatabase, seedDatabase } from "../db/seed.js";
 import type { AuthenticatedPrincipal } from "../auth/types.js";
 import type { AuthProvider } from "../config/types.js";
@@ -99,6 +133,24 @@ function resolveLocalSchemaRetriever(isTest: boolean): SchemaRetriever {
   });
 }
 
+function resolveLocalPolicyProvider(): PolicyProvider {
+  const remote = createHttpPolicyProviderFromEnv(process.env);
+  if (remote) return remote;
+  const policyPath = process.env.POLICY_CONFIG_PATH;
+  if (policyPath) {
+    return new FilePolicyProvider(policyPath);
+  }
+  return new InMemoryPolicyProvider([
+    {
+      ...createDefaultAccessPolicy(
+        { subjectId: "*", tenantId: "tenant-1", roles: ["analyst"] },
+        ["ecommerce_sqlite"],
+      ),
+      subjectId: "*",
+    },
+  ]);
+}
+
 export function createLocalRuntimeProfile(
   config: AppConfig,
 ): LocalRuntimeBundle {
@@ -107,14 +159,17 @@ export function createLocalRuntimeProfile(
   const db = createDatabase(dbPath);
   seedDatabase(db);
 
-  const dataSourceId = isTest ? "test" : "ecommerce_sqlite";
+  // 本地只暴露单一 canonical 数据源，避免重复 id 低置信度选源失败。
+  // 指标 YAML / demo 文档统一使用 ecommerce_sqlite。
+  const dataSourceId = "ecommerce_sqlite";
   const sourceConfig = createSqliteDataSourceConfig(dataSourceId, dbPath);
   const registry = InMemoryDataSourceRegistry.fromConfigs([sourceConfig]);
-  const principal = createTestPrincipal({
+  const principal: AuthenticatedPrincipal = {
     tenantId: "tenant-1",
     subjectId: isTest ? "user-test" : "user-dev",
-  });
-  const allowedIds = [dataSourceId, "default", "ecommerce_sqlite", "test"];
+    roles: ["analyst"],
+    claims: {},
+  };
 
   const sessionStore = isTest
     ? new InMemorySessionStore()
@@ -122,6 +177,26 @@ export function createLocalRuntimeProfile(
   const checkpointer = isTest
     ? new MemorySaver()
     : new SqliteCheckpointSaver(db);
+  const policyProvider = resolveLocalPolicyProvider();
+  const auditStore = isTest ? new InMemoryAuditStore() : new SqliteAuditStore(db);
+  const auditSink = createLocalAuditSink({ store: auditStore });
+  setAuditEmitter(auditSink.emitter!);
+  setAuditLogger(auditSink.logger);
+
+  const exportSecret = isTest
+    ? "test-export-secret-32chars-minimum!!"
+    : process.env.EXPORT_ENCRYPTION_SECRET;
+  const alertSink = createAlertSink(process.env);
+  const schemaIndexer = new SchemaIndexer({
+    backend: new InMemoryVectorIndexBackend(),
+    embeddings: new DeterministicEmbeddingProvider(),
+    collectionAlias: isTest ? "bi-metadata-test" : "bi-metadata-local",
+  });
+  const executorRegistry = buildSqliteExecutorRegistry({
+    db,
+    dataSourceId,
+    config: sourceConfig,
+  });
 
   return {
     environment: config.environment,
@@ -133,8 +208,52 @@ export function createLocalRuntimeProfile(
     dataSourceRegistry: registry,
     schemaRetriever: resolveLocalSchemaRetriever(isTest),
     checkpointer,
-    auditSink: { logger: new ConsoleAuditLogger() },
+    auditSink,
     sessionStore,
+    policyProvider,
+    executorRegistry,
+    productization: {
+      historyStore: isTest
+        ? new InMemoryQueryHistoryStore()
+        : process.env.HISTORY_DATABASE_URL || process.env.AUDIT_DATABASE_URL
+          ? new PostgresQueryHistoryStore({
+              connectionString:
+                process.env.HISTORY_DATABASE_URL ||
+                process.env.AUDIT_DATABASE_URL,
+            })
+          : new SqliteQueryHistoryStore(db),
+      queryCache: createQueryCacheFromEnv(process.env),
+      rateLimiter: new TenantRateLimiter(120, 60_000),
+      exportJobs: new InMemoryExportJobStore(exportSecret),
+      modelRegistry: createDefaultModelRegistry(),
+      metadataReview: new InMemoryMetadataReviewStore(),
+      schemaIndexer,
+      slowQueryRecorder: new InMemorySlowQueryRecorder(),
+      feedbackStore: isTest
+        ? new InMemoryAnalysisFeedbackStore()
+        : new PersistentAnalysisFeedbackStore(`${dbPath}.feedback.json`, exportSecret),
+      analysisJobs: isTest
+        ? new InMemoryAnalysisJobStore()
+        : new PersistentAnalysisJobStore(`${dbPath}.analysis-jobs.json`, exportSecret),
+      telemetry: createDefaultTelemetry(process.env),
+      alertSink,
+      sloMonitor: createDefaultSloMonitor((alert) => {
+        void alertSink.notify(alert);
+        emitAuditEvent({
+          event: "slo.alert",
+          requestId: "n/a",
+          traceId: "n/a",
+          subjectId: "system",
+          tenantId: "system",
+          metadata: {
+            kind: alert.kind,
+            threshold: alert.threshold,
+            actual: alert.actual,
+            at: alert.at,
+          },
+        });
+      }),
+    },
     resources: { db, dbPath },
   };
 }
@@ -143,12 +262,28 @@ export function loadPolicyForPrincipal(
   principal: AuthenticatedPrincipal,
   profile: RuntimeProfile,
 ) {
-  const authorized = profile.dataSourceRegistry.getAuthorized(
-    principal,
-    createDefaultAccessPolicy(principal),
+  const loaded = profile.policyProvider.loadPolicy(principal);
+  if (typeof (loaded as { then?: unknown }).then === "function") {
+    throw new Error(
+      "异步 PolicyProvider 请使用 loadPolicyForPrincipalAsync",
+    );
+  }
+  const base = loaded as import("../policy/access-policy.js").AccessPolicy;
+  const authorized = profile.dataSourceRegistry.getAuthorized(principal, base);
+  return withAuthorizedDataSources(
+    base,
+    authorized.map((source) => source.id),
   );
-  return createDefaultAccessPolicy(
-    principal,
+}
+
+export async function loadPolicyForPrincipalAsync(
+  principal: AuthenticatedPrincipal,
+  profile: RuntimeProfile,
+) {
+  const base = await profile.policyProvider.loadPolicy(principal);
+  const authorized = profile.dataSourceRegistry.getAuthorized(principal, base);
+  return withAuthorizedDataSources(
+    base,
     authorized.map((source) => source.id),
   );
 }

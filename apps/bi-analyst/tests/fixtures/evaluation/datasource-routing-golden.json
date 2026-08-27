@@ -1,0 +1,29 @@
+{
+  "minimumTop1Accuracy": 0.95,
+  "cases": [
+    { "id": "ROUTE-001", "query": "Use SQLite for order count", "expectedDataSourceId": "ecommerce_sqlite" },
+    { "id": "ROUTE-002", "query": "Run the city user report in SQLite", "expectedDataSourceId": "ecommerce_sqlite" },
+    { "id": "ROUTE-003", "query": "SQLite monthly order trend", "expectedDataSourceId": "ecommerce_sqlite" },
+    { "id": "ROUTE-004", "query": "Query the SQLite demo schema", "expectedDataSourceId": "ecommerce_sqlite" },
+
+    { "id": "ROUTE-005", "query": "Use MySQL for the sales report", "expectedDataSourceId": "sales_mysql" },
+    { "id": "ROUTE-006", "query": "Run order count in MySQL", "expectedDataSourceId": "sales_mysql" },
+    { "id": "ROUTE-007", "query": "MySQL monthly GMV", "expectedDataSourceId": "sales_mysql" },
+    { "id": "ROUTE-008", "query": "Query the sales_mysql datasource", "expectedDataSourceId": "sales_mysql" },
+
+    { "id": "ROUTE-009", "query": "Use MariaDB for the sales report", "expectedDataSourceId": "sales_mariadb" },
+    { "id": "ROUTE-010", "query": "Run order count in MariaDB", "expectedDataSourceId": "sales_mariadb" },
+    { "id": "ROUTE-011", "query": "MariaDB monthly GMV", "expectedDataSourceId": "sales_mariadb" },
+    { "id": "ROUTE-012", "query": "Query the sales_mariadb datasource", "expectedDataSourceId": "sales_mariadb" },
+
+    { "id": "ROUTE-013", "query": "Use PostgreSQL for the finance report", "expectedDataSourceId": "analytics_pg" },
+    { "id": "ROUTE-014", "query": "Run revenue analysis in Postgres", "expectedDataSourceId": "analytics_pg" },
+    { "id": "ROUTE-015", "query": "PG quarterly finance trend", "expectedDataSourceId": "analytics_pg" },
+    { "id": "ROUTE-016", "query": "Query the analytics_pg datasource", "expectedDataSourceId": "analytics_pg" },
+
+    { "id": "ROUTE-017", "query": "Show current order count", "expectedDataSourceId": "sales_mysql", "preferredDataSourceId": "sales_mysql" },
+    { "id": "ROUTE-018", "query": "Show paid order count", "expectedDataSourceId": "sales_mariadb", "preferredDataSourceId": "sales_mariadb" },
+    { "id": "ROUTE-019", "query": "Show average order amount", "expectedDataSourceId": "ecommerce_sqlite", "preferredDataSourceId": "ecommerce_sqlite" },
+    { "id": "ROUTE-020", "query": "Show finance revenue summary", "expectedDataSourceId": "analytics_pg", "preferredDataSourceId": "analytics_pg" }
+  ]
+}

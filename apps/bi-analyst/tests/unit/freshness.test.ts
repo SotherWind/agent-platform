@@ -51,4 +51,14 @@ export async function testMetadataFreshness() {
     ]);
     assert.ok(meta.warnings.some((w) => /schemaVersion/.test(w)));
   });
+
+  await test("indexedAt fallback remains transparent", () => {
+    const meta = computeMetadataFreshness(
+      [{ ...BASE_DOC, sourceUpdatedAt: undefined }],
+      { now: new Date("2026-07-09T15:00:00.000Z") },
+    );
+    assert.equal(meta.status, "fresh");
+    assert.equal(meta.dataAsOf, "2026-07-09T12:00:00.000Z");
+    assert.ok(meta.warnings.some((w) => /sourceUpdatedAt/.test(w)));
+  });
 }

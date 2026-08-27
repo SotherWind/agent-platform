@@ -1,0 +1,46 @@
+# Single-machine L4 registry. SQLite files are operator-mounted, never baked in.
+datasources:
+  - id: sales_mysql
+    label: Retail MySQL
+    domain: retail
+    productType: MySQL
+    dialectFamily: mysql
+    supportStatus: experimental
+    connection:
+      host: bi-acc-mysql
+      port: 3306
+      user: bi
+      database: retail
+      ssl: true
+      rejectUnauthorized: true
+      caFileEnv: BI_MYSQL_TLS_CA_PATH
+      secretRef:
+        provider: env
+        key: BI_MYSQL_PASSWORD
+    exposedSchemas:
+      - retail
+    defaultSchema: retail
+    capabilities:
+      identifierQuote: "`"
+      paginationStyle: limit
+
+  - id: analytics_pg
+    label: Analytics PostgreSQL
+    domain: finance
+    productType: PostgreSQL
+    dialectFamily: postgresql
+    supportStatus: experimental
+    connection:
+      host: bi-acc-postgres
+      port: 5432
+      user: bi
+      database: retail
+      ssl: true
+      rejectUnauthorized: true
+      caFileEnv: BI_PG_TLS_CA_PATH
+      secretRef:
+        provider: env
+        key: BI_PG_PASSWORD
+    exposedSchemas:
+      - public
+    defaultSchema: public

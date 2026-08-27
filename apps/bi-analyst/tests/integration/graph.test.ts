@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { buildGraph } from "../../src/agent";
+import { generateSqlTool } from "../../src/tools/generate_sql";
 import { test, section, addSkipped } from "../helpers/runner";
 import { createTestDb, cleanupDb } from "../helpers/db";
-import { hasLlmConfig } from "../helpers/fixtures";
+import { deterministicIntegrationSql, hasLlmConfig } from "../helpers/fixtures";
 import { invokeGraphWithRetry, sleep } from "../helpers/graph";
 import { getTestRuntimeProfile } from "../helpers/profile";
 
@@ -48,8 +49,11 @@ const INTEGRATION_CASES: IntegrationCase[] = [
     validate(result) {
       assert.ok(result.generatedSql);
       assert.ok(result.finalAnswer);
-      if (!result.executionResult?.error && result.chartSpec) {
-        assert.ok(["line", "bar", "table"].includes(result.chartSpec.type));
+      if (!result.executionResult?.error) {
+        assert.ok(result.chartSpec);
+        assert.equal(result.chartSpec!.type, "line");
+        assert.ok(result.executionResult!.rows.length >= 2);
+        assert.match(result.generatedSql!, /GROUP BY/i);
       }
     },
   },
@@ -83,7 +87,7 @@ const INTEGRATION_CASES: IntegrationCase[] = [
 ];
 
 export async function testIntegration(runIntegration: boolean) {
-  section("端到端集成 (buildGraph + LLM)");
+  section("端到端集成 (buildGraph + deterministic/live adapter)");
 
   if (!runIntegration) {
     console.log("  ⊘ 跳过：使用 npm run test:integration 或设置 RUN_INTEGRATION_TESTS=1");
@@ -91,8 +95,9 @@ export async function testIntegration(runIntegration: boolean) {
     return;
   }
 
-  if (!hasLlmConfig()) {
-    console.log("  ⊘ 跳过：未配置 MODEL_API_KEY");
+  const useLiveLlm = process.env.ENABLE_LIVE_LLM_EVAL === "1";
+  if (useLiveLlm && !hasLlmConfig()) {
+    console.log("  ⊘ 跳过：已请求 live LLM，但未配置 MODEL_API_KEY");
     addSkipped(INTEGRATION_CASE_COUNT);
     return;
   }
@@ -102,7 +107,14 @@ export async function testIntegration(runIntegration: boolean) {
   const INTEGRATION_TIMEOUT_MS = Number(process.env.INTEGRATION_TIMEOUT_MS ?? 300_000);
   const caseDelayMs = Number(process.env.INTEGRATION_CASE_DELAY_MS ?? 2000);
   const originalMaxRetry = process.env.MAX_RETRY_COUNT;
+  const originalInvoke = generateSqlTool.invoke.bind(generateSqlTool);
   process.env.MAX_RETRY_COUNT = "1";
+  if (!useLiveLlm) {
+    generateSqlTool.invoke = (async (input) =>
+      deterministicIntegrationSql(
+        String((input as { query?: unknown }).query ?? ""),
+      )) as typeof generateSqlTool.invoke;
+  }
 
   try {
     for (let i = 0; i < INTEGRATION_CASES.length; i++) {
@@ -122,6 +134,7 @@ export async function testIntegration(runIntegration: boolean) {
       });
     }
   } finally {
+    generateSqlTool.invoke = originalInvoke;
     if (originalMaxRetry === undefined) {
       delete process.env.MAX_RETRY_COUNT;
     } else {

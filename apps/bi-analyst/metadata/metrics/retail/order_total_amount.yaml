@@ -1,0 +1,56 @@
+metric: order_total_amount
+version: 1
+label: 订单总额
+datasourceId: ecommerce_sqlite
+status: certified
+owner: retail-bi
+factTable: orders
+entityKey: id
+measure:
+  field: amount
+  aggregation: sum
+  additive: true
+timeDimension: created_at
+timezone: Asia/Shanghai
+unit: CNY
+defaultFilters:
+  - field: status
+    operator: in
+    value: [paid, shipped]
+dimensions:
+  - name: user_name
+    joinPath: order_user
+    table: users
+    column: name
+  - name: city
+    joinPath: order_user
+    table: users
+    column: city
+  - name: status
+    table: orders
+    column: status
+  - name: created_at
+    table: orders
+    column: created_at
+synonyms:
+  - GMV
+  - sales
+  - sales amount
+  - marketing amount
+  - revenue
+  - income
+  - 收入
+  - 销售
+  - 成交总额
+  - 销售额
+  - 营销额
+  - 订单总额
+  - 流水
+joinGraph:
+  - name: order_user
+    from: orders
+    to: users
+    fromKey: user_id
+    toKey: id
+    cardinality: many_to_one
+freshnessSlaHours: 24

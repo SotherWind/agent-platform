@@ -1,0 +1,144 @@
+{
+  "cases": [
+    {
+      "id": "TTS-001",
+      "description": "北京用户订单总额",
+      "query": "查一下北京用户的订单总额",
+      "mustContain": ["sum", "orders", "users", "join", "北京"],
+      "requiredTables": ["orders", "users"]
+    },
+    {
+      "id": "TTS-002",
+      "description": "各城市用户数量",
+      "query": "统计各城市用户数量",
+      "mustContain": ["count", "users", "city", "group by"],
+      "requiredTables": ["users"]
+    },
+    {
+      "id": "TTS-003",
+      "description": "订单状态分布",
+      "query": "按状态统计订单数量",
+      "mustContain": ["count", "orders", "status", "group by"],
+      "requiredTables": ["orders"]
+    },
+    {
+      "id": "TTS-004",
+      "description": "Average order amount",
+      "query": "average order amount",
+      "mustContain": ["avg", "orders", "amount"],
+      "requiredTables": ["orders"]
+    },
+    {
+      "id": "TTS-005",
+      "description": "Paid order count",
+      "query": "paid order count",
+      "mustContain": ["count", "orders", "status", "paid"],
+      "requiredTables": ["orders"]
+    },
+    {
+      "id": "TTS-006",
+      "description": "Total sales amount",
+      "query": "total sales amount",
+      "mustContain": ["sum", "orders", "amount"],
+      "requiredTables": ["orders"]
+    },
+    {
+      "id": "TTS-007",
+      "description": "Sales grouped by city",
+      "query": "sales by city",
+      "mustContain": ["sum", "orders", "users", "join", "city", "group by"],
+      "requiredTables": ["orders", "users"]
+    },
+    {
+      "id": "TTS-008",
+      "description": "Orders grouped by city",
+      "query": "orders by city",
+      "mustContain": ["count", "orders", "users", "join", "city", "group by"],
+      "requiredTables": ["orders", "users"]
+    },
+    {
+      "id": "TTS-009",
+      "description": "Average order amount grouped by status",
+      "query": "average order amount by status",
+      "mustContain": ["avg", "orders", "amount", "status", "group by"],
+      "requiredTables": ["orders"]
+    },
+    {
+      "id": "TTS-010",
+      "description": "Paid orders grouped by city",
+      "query": "paid orders by city",
+      "mustContain": ["count", "orders", "users", "join", "paid", "city", "group by"],
+      "requiredTables": ["orders", "users"]
+    },
+    {
+      "id": "TTS-011",
+      "description": "Maximum order amount",
+      "query": "maximum order amount",
+      "mustContain": ["max", "orders", "amount"],
+      "requiredTables": ["orders"]
+    },
+    {
+      "id": "TTS-012",
+      "description": "Minimum order amount",
+      "query": "minimum order amount",
+      "mustContain": ["min", "orders", "amount"],
+      "requiredTables": ["orders"]
+    },
+    {
+      "id": "TTS-013",
+      "description": "Total user count",
+      "query": "total user count",
+      "mustContain": ["count", "users", "id"],
+      "requiredTables": ["users"]
+    },
+    {
+      "id": "TTS-014",
+      "description": "Distinct users with orders",
+      "query": "distinct ordering users",
+      "mustContain": ["count", "distinct", "user_id", "orders"],
+      "requiredTables": ["orders"]
+    },
+    {
+      "id": "TTS-015",
+      "description": "Pending order count",
+      "query": "pending order count",
+      "mustContain": ["count", "orders", "pending", "status"],
+      "requiredTables": ["orders"]
+    },
+    {
+      "id": "TTS-016",
+      "description": "Cancelled order count",
+      "query": "cancelled order count",
+      "mustContain": ["count", "orders", "cancelled", "status"],
+      "requiredTables": ["orders"]
+    },
+    {
+      "id": "TTS-017",
+      "description": "Shipped order count",
+      "query": "shipped order count",
+      "mustContain": ["count", "orders", "shipped", "status"],
+      "requiredTables": ["orders"]
+    },
+    {
+      "id": "TTS-018",
+      "description": "Shanghai order amount",
+      "query": "Shanghai order amount",
+      "mustContain": ["sum", "orders", "users", "join", "shanghai", "city"],
+      "requiredTables": ["orders", "users"]
+    },
+    {
+      "id": "TTS-019",
+      "description": "Monthly user signups",
+      "query": "monthly user signups",
+      "mustContain": ["strftime", "users", "created_at", "count", "group by"],
+      "requiredTables": ["users"]
+    },
+    {
+      "id": "TTS-020",
+      "description": "Orders created since 2024",
+      "query": "orders created since 2024",
+      "mustContain": ["count", "orders", "created_at", "2024-01-01", ">="],
+      "requiredTables": ["orders"]
+    }
+  ]
+}

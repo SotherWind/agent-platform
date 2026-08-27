@@ -1,5 +1,5 @@
 {
-  "description": "SQL 安全攻击集 — Phase A 验收 SEC-*",
+  "description": "SQL 安全攻击集 — Phase A/B 验收 SEC-*",
   "cases": [
     {
       "id": "SEC-001",
@@ -106,6 +106,99 @@
       "description": "合法 WITH 只读 CTE",
       "sql": "WITH cte AS (SELECT city FROM users) SELECT * FROM cte",
       "expectValid": true
+    },
+    {
+      "id": "SEC-016",
+      "category": "subquery",
+      "description": "子查询访问越权表",
+      "sql": "SELECT city FROM users WHERE id IN (SELECT user_id FROM admin_audit)",
+      "expectValid": false,
+      "allowedTables": ["users", "orders"]
+    },
+    {
+      "id": "SEC-017",
+      "category": "column_allowlist",
+      "description": "越权列访问",
+      "sql": "SELECT password FROM users",
+      "expectValid": false,
+      "allowedTables": ["users"],
+      "allowedColumns": {
+        "users": ["id", "city", "name", "created_at"]
+      }
+    },
+    {
+      "id": "SEC-018",
+      "category": "column_allowlist",
+      "description": "存在列白名单时拒绝 SELECT *",
+      "sql": "SELECT * FROM users",
+      "expectValid": false,
+      "allowedTables": ["users"],
+      "allowedColumns": {
+        "users": ["id", "city"]
+      }
+    },
+    {
+      "id": "SEC-019",
+      "category": "cte_depth",
+      "description": "CTE 嵌套超过深度限制",
+      "sql": "WITH a AS (WITH b AS (WITH c AS (SELECT city FROM users) SELECT * FROM c) SELECT * FROM b) SELECT * FROM a",
+      "expectValid": false,
+      "maxCteDepth": 2,
+      "allowedTables": ["users"]
+    },
+    {
+      "id": "SEC-020",
+      "category": "cost",
+      "description": "JOIN 数量超过成本限制",
+      "sql": "SELECT u.city FROM users u JOIN orders o1 ON u.id = o1.user_id JOIN orders o2 ON u.id = o2.user_id JOIN orders o3 ON u.id = o3.user_id",
+      "expectValid": false,
+      "maxJoins": 2,
+      "allowedTables": ["users", "orders"]
+    },
+    {
+      "id": "SEC-021",
+      "category": "cost",
+      "description": "无过滤全表明细扫描被拒绝",
+      "sql": "SELECT id, amount, status FROM orders",
+      "expectValid": false,
+      "allowedTables": ["orders"],
+      "requireFilterTables": ["orders"]
+    },
+    {
+      "id": "SEC-022",
+      "category": "safe",
+      "description": "白名单列合法查询",
+      "sql": "SELECT city FROM users WHERE city = 'Beijing'",
+      "expectValid": true,
+      "allowedTables": ["users"],
+      "allowedColumns": {
+        "users": ["id", "city", "name"]
+      }
+    },
+    {
+      "id": "SEC-023",
+      "category": "dangerous_function",
+      "description": "sqlite readfile",
+      "sql": "SELECT readfile('/etc/passwd')",
+      "expectValid": false
+    },
+    {
+      "id": "SEC-024",
+      "category": "safe",
+      "description": "带过滤的明细查询允许",
+      "sql": "SELECT id, amount FROM orders WHERE status = 'paid'",
+      "expectValid": true,
+      "allowedTables": ["orders"],
+      "requireFilterTables": ["orders"]
+    },
+    {
+      "id": "SEC-025",
+      "category": "cost",
+      "description": "EXPLAIN 启发式：无过滤明细（由执行器成本门禁覆盖，校验器 requireFilter 亦拒绝）",
+      "sql": "SELECT id, amount, status FROM orders",
+      "expectValid": false,
+      "allowedTables": ["orders"],
+      "requireFilterTables": ["orders"]
     }
   ]
 }

@@ -4,8 +4,9 @@ import {
   assertSessionOwnership,
   buildSessionKey,
   AuthError,
-  createTestPrincipal,
 } from "../../src/auth/principal.js";
+import { createTestPrincipal } from "../helpers/principal.js";
+import { AppError } from "../../src/errors/app-error.js";
 import { test, section } from "../helpers/runner.js";
 
 export async function testPrincipal() {
@@ -18,6 +19,22 @@ export async function testPrincipal() {
     });
     assert.equal(req.query, "北京用户订单总额");
     assert.equal(req.sessionId, "sess-1");
+  });
+
+  await test("parseAnalyzeRequest 接受 clarificationChoice", () => {
+    const req = parseAnalyzeRequest({
+      query: "继续",
+      clarificationChoice: "datasource.ecommerce_sqlite",
+    });
+    assert.equal(req.clarificationChoice, "datasource.ecommerce_sqlite");
+  });
+
+  await test("空 query 属于请求校验错误而非认证错误", () => {
+    assert.throws(
+      () => parseAnalyzeRequest({ query: "   " }),
+      (err: AppError) =>
+        err.code === "validation_error" && err.statusCode === 400,
+    );
   });
 
   await test("拒绝请求体伪造 userId / tenantId", () => {

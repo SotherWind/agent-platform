@@ -87,7 +87,11 @@ pnpm start
 
 ```bash
 curl http://localhost:3000/health
+curl http://localhost:3000/live
+curl http://localhost:3000/ready
 ```
+
+`/health` 与 `/live` 用于存活检查；容器和流量入口应使用 `/ready`，依赖未就绪时返回 HTTP 503。
 
 ### 问数分析
 
@@ -117,6 +121,8 @@ pnpm test:e2e:local     # 本地 E2E
 ```bash
 pnpm index:metadata     # 将 demo Schema 索引到 Qdrant
 pnpm verify:artifact    # 校验生产构建产物
+pnpm verify:routing     # 多数据源 Top-1 路由门禁
+pnpm verify:llm-eval    # 20 条 Text-to-SQL golden；可要求真实模型不得跳过
 pnpm typecheck          # TypeScript 类型检查
 ```
 
@@ -126,9 +132,13 @@ pnpm typecheck          # TypeScript 类型检查
 
 本地开发默认使用 SQLite 演示库（`data/ecommerce.db`，首次启动自动 seed）。
 
+`staging` / `production` 的 production artifact 不创建、seed 或打包该演示库。单机部署需要 SQLite 时，由运维把已有数据库文件挂载到容器/主机，并在 Registry 的 `connection.filePath` 中填写该文件的绝对路径；运行时只读打开且要求文件已存在。默认 `config/datasources.staging-acc.yaml` 仅启用 MySQL 与 PostgreSQL。
+
+部署运行时以 YAML Registry 作为连接配置的唯一来源。MySQL/PostgreSQL 的 `connection` 必须提供 `host`、`port`、`user`、`database` 和 `secretRef`；密码只通过 `SecretProvider` 解析，连接失败会直接阻止启动。
+
 ## 当前状态
 
-项目处于 **prototype** 阶段，核心链路可运行，但多数模块尚未达到生产认证。详细演进计划见 [docs/ENTERPRISE-PLAN.md](./docs/ENTERPRISE-PLAN.md)。
+单机部署主路径已完成收口；云、集群、真实 Oracle/SQL Server live 与 `production-certified` 仍在当前范围外。详细状态见 [docs/ENTERPRISE-PLAN.md](./docs/ENTERPRISE-PLAN.md) 和 [docs/SUPPORT-STATUS.md](./docs/SUPPORT-STATUS.md)。
 
 ## 依赖
 
@@ -136,3 +146,16 @@ pnpm typecheck          # TypeScript 类型检查
 - LangGraph / LangChain — Agent 编排
 - better-sqlite3 — 本地 SQLite
 - @langchain/qdrant — 向量 Schema 检索（可选）
+
+## 生产状态与部署
+
+生产环境的 `Session`、导出任务、模型 canary/回滚和元数据审核状态以 `REDIS_URL` 为权威存储，启动时会检查 Redis 连通性；`AUDIT_DATABASE_URL`（或 `HISTORY_DATABASE_URL`）、`HISTORY_ENCRYPTION_SECRET` 和 `EXPORT_ENCRYPTION_SECRET` 也是生产必需项。滚动发布时各实例从 Redis 读取同一份状态，导出 CSV 在写入 Redis 前使用 AES 加密。
+
+单机 staging 可使用 `STATE_VOLUME_PATH` 和 SQLite/JSON 文件回退，但这不是生产多实例配置。staging mock token 接口仅监听 loopback，并要求 `BI_STAGING_MOCK_ADMIN_KEY` 请求头。
+
+企业分析闭环接口：
+
+- `POST /api/feedback`、`GET /api/feedback`：记录答案评价和人工修正；`BI_EVAL_REVIEWER` 可按租户读取并通过 `GET /api/feedback/replay` 导出回放集。
+- `GET /api/semantic/metrics`：读取已认证指标；管理员可加 `governance=1` 查看版本、依赖和生命周期校验结果。
+- `POST /api/analyze/jobs`、`GET/POST /api/analyze/jobs/:jobId[/cancel]`：提交、查询和取消可持久化异步分析任务。
+- `GET /api/metrics`：在原有 SLO 快照之外返回内置 Telemetry span/counter/gauge；设置 `OTEL_EXPORTER_OTLP_ENDPOINT` 可异步导出 trace。

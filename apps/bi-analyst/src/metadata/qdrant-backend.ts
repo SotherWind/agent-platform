@@ -77,21 +77,45 @@ export class QdrantVectorIndexBackend implements VectorIndexBackend {
     limit: number,
   ): Promise<VectorSearchHit[]> {
     const resolved = await this.resolveCollection(collection);
-    const result = await this.client.search(resolved, {
-      vector: queryVector,
-      limit,
-      filter: buildQdrantFilter(filter),
-      with_payload: true,
-    });
+    // Qdrant JS 1.19 removed the legacy `search` method in favor of the
+    // universal `query` endpoint. Keep a small compatibility fallback for
+    // older deployed clients while compiling against the current API.
+    const client = this.client as QdrantClient & {
+      search?: (collection: string, input: Record<string, unknown>) => Promise<unknown>;
+    };
+    const result =
+      typeof this.client.query === "function"
+        ? await this.client.query(resolved, {
+            query: queryVector,
+            limit,
+            filter: buildQdrantFilter(filter),
+            with_payload: true,
+          })
+        : await client.search!(resolved, {
+            vector: queryVector,
+            limit,
+            filter: buildQdrantFilter(filter),
+            with_payload: true,
+          });
+    const points = Array.isArray(result)
+      ? result
+      : ((result as { points?: unknown[] }).points ?? []);
 
-    return result.map((item) => ({
-      score: item.score ?? 0,
+    return points.map((item: unknown) => {
+      const scored = item as {
+        score?: number;
+        id: string | number;
+        payload?: Record<string, unknown> | null;
+      };
+      return {
+      score: scored.score ?? 0,
       point: {
-        id: String(item.id),
+        id: String(scored.id),
         vector: queryVector,
-        payload: (item.payload ?? {}) as Record<string, unknown>,
+        payload: (scored.payload ?? {}) as Record<string, unknown>,
       },
-    }));
+      };
+    });
   }
 
   async createCollection(name: string, vectorSize: number): Promise<void> {
@@ -165,6 +189,29 @@ export class QdrantVectorIndexBackend implements VectorIndexBackend {
       vector: (point.vector as number[]) ?? [],
       payload: (point.payload ?? {}) as Record<string, unknown>,
     };
+  }
+
+  async listPoints(collection: string): Promise<VectorPoint[]> {
+    const resolved = await this.resolveCollection(collection);
+    const points: VectorPoint[] = [];
+    let offset: string | number | undefined;
+    do {
+      const page = await this.client.scroll(resolved, {
+        limit: 256,
+        offset,
+        with_payload: true,
+        with_vector: true,
+      });
+      for (const point of page.points) {
+        points.push({
+          id: String(point.id),
+          vector: (point.vector as number[]) ?? [],
+          payload: (point.payload ?? {}) as Record<string, unknown>,
+        });
+      }
+      offset = page.next_page_offset as string | number | undefined;
+    } while (offset !== undefined && offset !== null);
+    return points;
   }
 
   private async resolveCollection(nameOrAlias: string): Promise<string> {

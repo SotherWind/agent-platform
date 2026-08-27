@@ -5,7 +5,7 @@ export type {
   LLMConnectionConfig,
   LLMInstance,
   RemoveLLMCacheOptions,
-} from "./types";
-export { LLMModelType } from "./types";
-export { loadLLMConfig } from "./config";
-export { clearLLMCache, getLLM, getLLMCacheSize, removeLLMCache } from "./llm";
+} from "./types.js";
+export { LLMModelType } from "./types.js";
+export { loadLLMConfig } from "./config.js";
+export { clearLLMCache, getLLM, getLLMCacheSize, removeLLMCache } from "./llm.js";

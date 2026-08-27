@@ -1,0 +1,38 @@
+metric: average_order_amount
+version: 1
+label: Average order amount
+datasourceId: ecommerce_sqlite
+status: certified
+owner: retail-bi
+factTable: orders
+entityKey: id
+measure:
+  field: amount
+  aggregation: avg
+  additive: false
+timeDimension: created_at
+timezone: Asia/Shanghai
+unit: CNY
+defaultFilters: []
+dimensions:
+  - name: status
+    table: orders
+    column: status
+  - name: city
+    joinPath: order_user
+    table: users
+    column: city
+synonyms:
+  - average order amount
+  - avg order amount
+  - AOV
+  - 客单价
+joinGraph:
+  - name: order_user
+    from: orders
+    to: users
+    fromKey: user_id
+    toKey: id
+    cardinality: many_to_one
+freshnessSlaHours: 24
+requireTimeRange: false
