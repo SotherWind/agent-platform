@@ -4,8 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "clean": "pnpm -r exec rimraf node_modules && (rimraf node_modules || node -e \"process.exit(0)\")"
+    "test": "pnpm -r test",
+    "clean": "pnpm -r exec rimraf node_modules && (rimraf node_modules || node -e \"process.exit(0)\")",
+    "web:bi-analyst": "pnpm --filter @agent-platform/web-bi-analyst dev"
   },
   "devDependencies": {
     "rimraf": "^6.0.1"
@@ -23,4 +24,3 @@
   "packageManager": "pnpm@9.15.9",
   "type": "module"
 }
-

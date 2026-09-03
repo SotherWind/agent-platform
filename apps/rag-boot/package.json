@@ -5,7 +5,12 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx src/index.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest run --pool=threads --no-file-parallelism --no-isolate --maxWorkers=1",
+    "test:watch": "vitest",
+    "test:cov": "vitest run --coverage --pool=threads --no-file-parallelism --no-isolate --maxWorkers=1",
+    "typecheck": "tsc --noEmit",
+    "eval": "tsx src/eval/cli.ts",
+    "eval:gate": "tsx src/eval/cli.ts --gate"
   },
   "keywords": [],
   "author": "",
@@ -21,13 +26,17 @@
     "@qdrant/js-client-rest": "^1.18.0",
     "better-sqlite3": "^12.11.1",
     "dotenv": "^17.4.2",
+    "js-tiktoken": "^1.0.21",
     "langchain": "^1.5.2",
     "langfuse-langchain": "^3.38.20",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.9.3",
+    "@vitest/coverage-v8": "^4.1.11",
     "tsx": "^4.22.4",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11"
   }
 }
