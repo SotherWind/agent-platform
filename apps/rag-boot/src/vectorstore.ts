@@ -17,6 +17,7 @@ import type {
   VectorStoreConfig,
   IngestOptions,
   VectorStoreType,
+  KnowledgeChangeAuditEntry,
 } from "./type";
 import { createEmbeddings } from "./embeddings";
 
@@ -28,7 +29,8 @@ const DEFAULT_CHUNK_OVERLAP = 50;
 /** 合并 overrides 与 .env，得到 Qdrant 连接配置 */
 function resolveConfig(
   overrides: Partial<VectorStoreConfig> = {},
-): Required<VectorStoreConfig> {
+): Required<Pick<VectorStoreConfig, "url" | "apiKey" | "collectionName">> &
+  Pick<VectorStoreConfig, "onKnowledgeChange"> {
   return {
     url: overrides.url ?? process.env.QDRANT_URL ?? "http://localhost:6333",
     apiKey: overrides.apiKey ?? process.env.QDRANT_API_KEY ?? "",
@@ -36,6 +38,7 @@ function resolveConfig(
       overrides.collectionName ??
       process.env.QDRANT_COLLECTION_NAME ??
       "rag_boot",
+    onKnowledgeChange: overrides.onKnowledgeChange,
   };
 }
 
@@ -56,6 +59,9 @@ function enrichDocuments(docs: Document[], options: IngestOptions): Document[] {
           documentId: options.documentId,
           tenantId: options.tenantId,
           source: source ?? doc.metadata?.source,
+          version: options.version ?? 1,
+          effectiveAt: options.effectiveAt ?? null,
+          expiredAt: options.expiredAt ?? null,
         },
       }),
   );
@@ -76,9 +82,25 @@ function toRetrievedChunk(doc: Document, score: number): RetrievedChunk {
 }
 
 /** Qdrant 过滤：只检索指定租户的数据 */
-function tenantFilter(tenantId: string) {
+export function isKnowledgeDocumentActive(
+  metadata: Record<string, unknown>,
+  now: number = Date.now(),
+): boolean {
+  const effectiveAt = metadata.effectiveAt;
+  const expiredAt = metadata.expiredAt;
+  return (
+    (typeof effectiveAt !== "number" || effectiveAt <= now) &&
+    (typeof expiredAt !== "number" || expiredAt > now)
+  );
+}
+
+export function knowledgeFilter(tenantId: string, now: number = Date.now()) {
   return {
     must: [{ key: "metadata.tenantId", match: { value: tenantId } }],
+    must_not: [
+      { key: "metadata.effectiveAt", range: { gt: now } },
+      { key: "metadata.expiredAt", range: { lte: now } },
+    ],
   };
 }
 
@@ -270,7 +292,7 @@ function readCollectionVectorSize(collection: {
  * 下次写入时 LangChain 会按新维度自动重建（避免 FakeEmbeddings 4 维 vs 真实模型 1024 维报错）。
  */
 async function ensureCollectionDimension(
-  config: Required<VectorStoreConfig>,
+  config: Pick<Required<VectorStoreConfig>, "url" | "apiKey" | "collectionName">,
   embeddings: EmbeddingsInterface,
 ): Promise<void> {
   const client = new QdrantClient({
@@ -295,7 +317,10 @@ async function ensureCollectionDimension(
 
 /** Qdrant 向量库封装 */
 export class VectorStore implements VectorStoreType {
-  private constructor(private readonly store: LangchainQdrantVectorStore) {}
+  private constructor(
+    private readonly store: LangchainQdrantVectorStore,
+    private readonly onKnowledgeChange?: (entry: KnowledgeChangeAuditEntry) => void | Promise<void>,
+  ) {}
 
   /** 打开 LangChain Qdrant 客户端，并在连接前校验向量维度 */
   private static async openLangchainStore(
@@ -316,7 +341,7 @@ export class VectorStore implements VectorStoreType {
     overrides: Partial<VectorStoreConfig> = {},
   ): Promise<VectorStoreType> {
     const store = await VectorStore.openLangchainStore(overrides);
-    return new VectorStore(store);
+    return new VectorStore(store, overrides.onKnowledgeChange);
   }
 
   /**
@@ -327,7 +352,7 @@ export class VectorStore implements VectorStoreType {
     if (docs.length === 0) return 0;
 
     if (options.replace !== false) {
-      await this.deleteByDocumentId(options.documentId, options.tenantId);
+      await this.deleteDocumentVectors(options.documentId, options.tenantId);
     }
 
     const enriched = enrichDocuments(docs, options);
@@ -335,6 +360,16 @@ export class VectorStore implements VectorStoreType {
       const batch = enriched.slice(i, i + INGEST_BATCH_SIZE);
       await this.store.addDocuments(batch);
     }
+    await this.onKnowledgeChange?.({
+      action: options.replace === false ? "create" : "replace",
+      tenantId: options.tenantId,
+      documentId: options.documentId,
+      version: options.version ?? 1,
+      effectiveAt: options.effectiveAt,
+      expiredAt: options.expiredAt,
+      chunkCount: enriched.length,
+      at: Date.now(),
+    });
     return enriched.length;
   }
 
@@ -346,13 +381,23 @@ export class VectorStore implements VectorStoreType {
     return this.addDocuments(chunks, { ...options, source: options.source ?? filePath });
   }
 
+  private async deleteDocumentVectors(documentId: string, tenantId: string): Promise<void> {
+    await this.store.delete({
+      filter: documentFilter(documentId, tenantId),
+    });
+  }
+
   /** 按 documentId + tenantId 删除该文档的全部 chunk 向量 */
   async deleteByDocumentId(
     documentId: string,
     tenantId: string,
   ): Promise<void> {
-    await this.store.delete({
-      filter: documentFilter(documentId, tenantId),
+    await this.deleteDocumentVectors(documentId, tenantId);
+    await this.onKnowledgeChange?.({
+      action: "delete",
+      tenantId,
+      documentId,
+      at: Date.now(),
     });
   }
 
@@ -365,12 +410,18 @@ export class VectorStore implements VectorStoreType {
     tenantId: string,
     topK: number = 10,
   ): Promise<RetrievedChunk[]> {
+    const now = Date.now();
     const results = await this.store.similaritySearchWithScore(
       query,
       topK,
-      tenantFilter(tenantId),
+      knowledgeFilter(tenantId, now),
     );
-    return results.map(([doc, score]) => toRetrievedChunk(doc, score));
+    // 兼容旧 Qdrant / fake store 对 must_not 的忽略，应用层再做一次硬过滤。
+    return results
+      .filter(([doc]) => {
+        return isKnowledgeDocumentActive(doc.metadata, now);
+      })
+      .map(([doc, score]) => toRetrievedChunk(doc, score));
   }
 }
 
