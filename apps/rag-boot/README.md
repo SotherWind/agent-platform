@@ -1,147 +1,72 @@
 # rag-boot
 
-知识库 RAG 检索 Agent。基于 LangGraph 编排向量检索、重排序与答案生成，支持多租户隔离与 Langfuse 可观测性。
+企业级智能客服 Agent 的 TypeScript + LangGraph 实现，默认采用安全降级和依赖注入，支持多租户 RAG、工具调用、人工交接、评测与治理。
 
-## 核心能力
-
-- **向量检索**：Qdrant 存储，按 `tenantId` 过滤，Fail-closed 拒绝无租户请求
-- **重排序（Rerank）**：检索结果二次排序，提升 Precision
-- **文档入库**：支持 Markdown 文件切分（按 `##` 标题）与通用文本切分
-- **引用溯源**：生成答案时附带 citations 来源片段
-- **可观测性**：集成 Langfuse tracing
-
-## 工作流
-
-```
-retrieve → rerank → generate
-```
-
-| 节点 | 职责 |
-|------|------|
-| retrieve | 向量相似度检索，tenant 过滤 |
-| rerank | 对 Top-K 结果重排序，取 Top-N |
-| generate | 基于重排结果生成答案 + citations |
-
-## 目录结构
-
-```
-src/
-├── index.ts        # 对外导出 createGraph
-├── agent.ts        # LangGraph 工作流
-├── vectorstore.ts  # Qdrant 向量库封装
-├── embeddings.ts   # Embedding 工厂
-├── rerank.ts       # Rerank API 封装
-├── tools.ts        # retrieveContext 工具
-├── observability.ts # Langfuse tracing
-├── schema.ts       # Zod 类型定义
-└── state.ts        # Agent 状态
-```
-
-## 快速开始
-
-### 1. 安装依赖（在 monorepo 根目录）
+## 本地验证
 
 ```bash
-pnpm install
+pnpm test
+pnpm typecheck
+pnpm test:cov
+pnpm eval
+SECURITY_TESTS_PASSED=true pnpm eval:gate
 ```
 
-### 2. 配置环境变量
+`test` 在 Windows 环境使用单 worker 的 threads pool，避免 Vitest 通过 `wmic` 探测进程导致测试退出异常。
 
-在 `apps/rag-boot/` 下创建 `.env`：
+## 核心链路
 
-```env
-# LLM
-MODEL_API_KEY=your-api-key
-MODEL_BASE_URL=https://api.example.com/v1
-MODEL_NAME=your-model
-
-# Qdrant
-QDRANT_URL=http://localhost:6333
-QDRANT_API_KEY=
-QDRANT_COLLECTION_NAME=rag_boot
-
-# Embedding（OpenAI 兼容）
-EMBEDDING_API_KEY=your-embedding-key
-EMBEDDING_BASE_URL=https://api.example.com/v1
-EMBEDDING_MODEL=your-embedding-model
-
-# Rerank API（可选，不配置则使用 Mock Rerank）
-# RERANK_API_KEY=
-# RERANK_BASE_URL=
-# RERANK_MODEL=
-
-# Langfuse（可选）
-# LANGFUSE_PUBLIC_KEY=
-# LANGFUSE_SECRET_KEY=
-# LANGFUSE_BASE_URL=
+```text
+入口鉴权/幂等
+  -> 前置拦截与直答
+  -> 输入 Guardrails
+  -> triage
+  -> query rewrite
+  -> retrieve -> rerank -> context budget -> confidence
+  -> specialist <-> tools
+  -> orchestrator -> generate -> reviewer
+  -> output / escalation + handoff + ticket
 ```
 
-### 3. 启动
+- 直接调用公开 `createGraph()` 时必须传入 `authenticated: true`；生产入口应先通过 `AccessGateway`，租户身份从凭证获得。
+- `buildGraph()` 默认使用 `MemorySaver`。生产可注入 `SqliteSaver`，并在调用配置中提供 `configurable.thread_id`。
+- `reranker` 未配置时默认走向量排序降级；传入 `null` 可显式关闭远程 rerank。
+- 所有写工具必须经过 propose/confirm/execute；生成模型永远不能直接触发写副作用。
+- 流式公开入口采用“先审后发”：完成 Reviewer 后才按 chunk 发送，避免高风险内容先发后拦。
+- MCP 适配层只提供无状态 `tools/call`、MRTR `input_required`/`requestState` 与 W3C Trace Context 接口形状，具体传输由调用方注入。
 
-```bash
-pnpm dev
-```
+## 环境变量
 
-## 编程式调用
+真实 LLM 使用：
 
-```ts
-import { createGraph } from "./src/index.js";
+- `MODEL_API_KEY`
+- `MODEL_NAME`（默认 `gpt-4o-mini`）
+- `MODEL_BASE_URL`（可选）
 
-const graph = createGraph();
+Qdrant 使用：
 
-const result = await graph.invoke({
-  query: "什么是 RAG？",
-  tenantId: "tenant-001",
-  history: [],
-});
+- `QDRANT_URL`
+- `QDRANT_API_KEY`（可选）
+- `QDRANT_COLLECTION_NAME`（可选）
+- `USE_QDRANT=true`
 
-console.log(result.answer);   // 生成的回答
-console.log(result.sources);  // 引用来源片段
-```
+Rerank 使用：
 
-### 流式调用
+- `RERANK_API_KEY`
+- `RERANK_BASE_URL`（可选）
+- `RERANK_MODEL`（可选）
 
-```ts
-const stream = await graph.stream({
-  query: "解释向量检索原理",
-  tenantId: "tenant-001",
-  history: [],
-});
+评测质量门禁：
 
-for await (const chunk of stream) {
-  console.log(chunk);
-}
-```
+- `SECURITY_TESTS_PASSED=true`：表示安全类测试已经通过，门禁才允许通过。
+- `HUMAN_BASELINE_RESOLUTION_RATE`：仅在需要输出相对人工 baseline 的 savings 结论时提供。
 
-## 文档入库
+## 目录说明
 
-通过 `VectorStoreType` 接口入库：
-
-```ts
-import { createVectorStore } from "./src/vectorstore.js";
-
-const store = await createVectorStore();
-
-await store.ingestFile("./docs/guide.md", {
-  tenantId: "tenant-001",
-  documentId: "guide-v1",
-  source: "internal-docs",
-  splitBySection: true,  // Markdown 按 ## 标题切分
-});
-```
-
-## 多租户安全
-
-- 检索时必须提供 `tenantId`，缺失则直接拒绝
-- 生成阶段二次过滤 citations，防止跨租户数据泄漏
-- 向量 metadata 中携带 `tenantId`，检索时强制过滤
-
-## 当前状态
-
-RAG 核心链路已实现，适合作为知识检索 Agent 的基础模块。后续将与 **web-research** 和 **agent-orchestrator** 集成。
-
-## 依赖
-
-- LangGraph / LangChain — Agent 编排
-- @langchain/qdrant — 向量存储
-- langfuse-langchain — 可观测性
+- `src/agent.ts`：主 LangGraph 编排图。
+- `src/nodes/`：triage、rewrite、检索预算、置信度、专家、编排、生成。
+- `src/tools/`、`src/actions/`、`src/tickets.ts`：工具契约、幂等、动作信号、三段分离和工单。
+- `src/guardrails/`：输入、动作、输出三点 Guardrails 与 Reviewer。
+- `src/eval/`：JSONL fixture 回放、指标、质量门禁。
+- `src/observability/`：结构化 tracing、PII 脱敏和留存。
+- `docs/architecture-task-checklist.md`：架构任务清单与完成状态。

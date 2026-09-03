@@ -11,6 +11,8 @@ agent-platform/
 │   ├── rag-boot/            # RAG 检索 Agent
 │   ├── web-research/        # 联网研究 Agent（规划中）
 │   └── agent-orchestrator/  # 多 Agent 编排系统（规划中）
+├── web/
+│   └── bi-analyst/          # BI 问数前端工作台
 ├── packages/
 │   └── llm-sdk/             # 共享 LLM SDK（OpenAI 兼容 + 连接缓存）
 ├── pnpm-workspace.yaml
@@ -22,7 +24,8 @@ agent-platform/
 | 项目 | 状态 | 说明 |
 |------|------|------|
 | [bi-analyst](./apps/bi-analyst) | 开发中 | 自然语言 BI 问数：Schema RAG、Text-to-SQL、ECharts 可视化 |
-| [rag-boot](./apps/rag-boot) | 开发中 | 知识库 RAG：向量检索、重排序、多租户隔离 |
+| [web/bi-analyst](./web/bi-analyst) | 开发中 | 问数工作台（React + Ant Design + @ai-sdk/react） |
+| [rag-boot](./apps/rag-boot) | 核心闭环已实现 | 企业级客服 Agent：分诊、循环编排、RAG、工具安全、Guardrails、人工交接、评测与治理 |
 | [web-research](./apps/web-research) | 规划中 | 联网深度调研：Web 搜索、信息聚合与报告生成 |
 | [agent-orchestrator](./apps/agent-orchestrator) | 规划中 | 多 Agent 编排：串联问数、检索、联网研究 |
 | [@agent-platform/llm-sdk](./packages/llm-sdk) | 可用 | LangChain ChatOpenAI 工厂与连接缓存 |
@@ -52,6 +55,9 @@ pnpm dev
 cd apps/rag-boot
 # 创建 .env 并按 README 配置环境变量
 pnpm dev
+
+# BI 问数前端（需同时运行 apps/bi-analyst）
+pnpm web:bi-analyst
 ```
 
 各子项目的详细说明、环境变量与 API 文档见对应目录下的 README。
