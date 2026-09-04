@@ -159,6 +159,11 @@ describe("会话状态", () => {
 
 **验收标准**：✅ 三个测试全过；✅ 多轮对话不再丢上下文（对应 Swiggy 迭代 2 死因）。
 
+**实现落点**（`src/sqlite-saver.ts` + `BuildGraphConfig.checkpointer` 注入，测试 `src/__tests__/integration/t04-checkpointer.test.ts`，3 条）
+
+- `SqliteSaver` 对齐 `BaseCheckpointSaver` 契约：getTuple/put/putWrites/list/deleteThread 全套，落盘文件，换实例可恢复。
+- **修正（2026-09-04）**：`putWrites` 把 `PendingWrite`（`[channel, value]` 二元组）强转三元组解构，生产路径一调用就抛 `RangeError: Too few parameter values were provided`——此前该文件零测试、零 import，T0.4 的验收从未被执行过。已修复为二元组解构（与上游 `@langchain/langgraph-checkpoint` 类型一致；注意 `getTuple` 出参的 `CheckpointPendingWrite` 才是三元组，两者形状不同）。三条验收用真实 better-sqlite3 + 真实图跑通：换实例恢复上轮 query 与 citations / 重启后 turnCount 递增 / 不同 threadId 互不可见。因 better-sqlite3 是原生模块（ABI 绑定 Node 版本），用例放 integration project 并带 sqliteAvailable 自检守卫，Node 版本匹配时必跑。
+
 ---
 
 ### T0.5 generateNode 接真实 LLM（阻断项） ✅ 已完成
@@ -185,6 +190,11 @@ describe("generateNode", () => {
 - 系统提示词单独放 `src/prompts/` 并版本化（对应 Swiggy 的 Prompt Registry 实践）。
 
 **验收标准**：✅ 单测零网络调用；✅ 生成失败有明确错误类型；✅ 提示词文件与代码分离。
+
+**实现落点**（`src/nodes/generate.ts` + `src/prompts/`，测试 `src/__tests__/t05-generate.test.ts`，4 条）
+
+- 生成走注入的 LLM（`BuildGraphConfig.llms`），prompt 由 `renderPrompt(GENERATE_PROMPT, ...)` 渲染；检索为空且无工具结果时不调模型直接兜底。
+- **补测说明（2026-09-04）**：四条验收中「prompt 含 reranked 上下文与租户约束」「LLM 抛错向上抛 LlmTimeoutError」两条此前零断言（generate.ts 的透传/空输出分支从未被执行）。已补齐：reranker 改变 chunk 顺序后 prompt 里的上下文顺序随之变化 + 租户约束文案在 system 中；错误路径拆三个用例——普通错误包装 / LlmTimeoutError 原样透传（`toBe(original)`，降级链靠 retryable 决策）/ 空输出抛错，并经 mutation 验证。
 
 ---
 
@@ -274,9 +284,10 @@ describe("专家节点隔离", () => {
 
 **验收标准**：✅ 越界调用必然被代码拦截（不依赖模型自觉）；✅ 并行执行无状态串扰。
 
-**实现落点**（`src/nodes/specialist.ts` + `nodes/specialists.ts`，测试 `src/__tests__/t13-specialist.test.ts`，4 条）
+**实现落点**（`src/nodes/specialist.ts` + `nodes/specialists.ts` + `src/prompts/specialists.ts`，测试 `src/__tests__/t13-specialist.test.ts`，5 条）
 
-- 注册表 `SPECIALIST_REGISTRY`：category / promptVersion / toolNames / evalSetPath / priority，六类别各带独立评测集路径。
+- 注册表 `SPECIALIST_REGISTRY`：category / **promptPath** / toolNames / evalSetPath / priority，六类别各带独立评测集路径。
+- **修正（2026-09-04）**：字段已从 promptVersion 改为清单 272 行要求的 promptPath（值形如 `prompts/specialists#billing`）；六专家提示词迁往 `src/prompts/specialists.ts`，每专家独立 Prompt 对象与独立版本轨（此前共用 `SPECIALIST_PROMPT` + `{{category}}` 占位，谈不上独立版本轨）。`SpecialistOutput.promptVersion` 保留（记录本轮实际用的专家提示词版本，供 T7.1 回放定位）。
 - 越界在**解析输出时**由 `enforceToolBoundary` 拦截；被拒请求带 reason 存进 `rejectedToolRequests`（本轮补上 schema 的 reason 字段——之前被 zod strip 掉，「记录违规」名存实亡）。
 - 并行无串扰：`runSpecialists` 用 Promise.all，每个专家只读共享快照、只写自己的结构化输出对象；三种结果 resolved / needsOrchestrator / escalate 均可单测触发。
 
@@ -501,6 +512,11 @@ describe("MCP 无状态适配", () => {
 
 **验收标准**：✅ 无粘性会话依赖；⚠️ 若暂不接 MCP，本任务标记为 deferred 但保留接口形状。
 
+**实现落点**（`src/mcp/stateless.ts` + `src/mcp/confirmation.ts`，测试 `src/__tests__/mcp.test.ts`，8 条）
+
+- `StatelessMcpAdapter`：无握手、无 `Mcp-Session-Id`，首个请求即真实工具调用；`input_required` 收集 `inputResponses` 回带 `requestState` 重发；`_meta` 透传 W3C Trace Context；恢复请求打到全新实例也可响应（状态全在 requestState）。
+- **修正（2026-09-04）**：实现要点「确认状态（T5.3）走 MRTR」此前没有桥接代码——adapter 除 re-export 外零使用点。已补 `src/mcp/confirmation.ts`：`proposalToInputRequired` 把 T5.3 的 ActionProposal 映射为 MRTR `input_required`（requestState 携带 proposalId + confirmToken + expiresAt，base64url 不透明串，语义等同令牌需 TLS），`resumeToConfirmation` 从 resume 请求解出 confirm 入参（非法 requestState fail-closed 抛错）。encode/decode 为纯函数，天然满足「任意实例可响应」。
+
 ---
 
 ### T3.5 CRM/业务系统 action-trigger 集成 ✅ 已完成
@@ -609,10 +625,11 @@ describe("转人工触发", () => {
 })
 ```
 
-**实现落点**（`src/escalation.ts`，测试 `src/__tests__/t51-escalation.test.ts`，5 条；另有 security.test.ts 与 t91-asr-confidence.test.ts 覆盖 user_request 与 low_confidence_repeat）
+**实现落点**（`src/escalation.ts` + `src/sentiment.ts`，测试 `src/__tests__/t51-escalation.test.ts` 5 条 + `src/__tests__/t51-sentiment.test.ts` 7 条；另有 security.test.ts 与 t91-asr-confidence.test.ts 覆盖 user_request 与 low_confidence_repeat）
 
 - `evaluateEscalation` 纯函数策略，触发条件全部可配置：user_request / repeated_fallback(≥2) / negative_sentiment(强度阈值可配) / reviewer_rejected(≥2) / triage_likely_needs_human / low_confidence_repeat(≥2) / high_urgency / budget_exceeded / all_models_failed / policy_violation。
 - 规则前置 `isHumanRequest` 命中不经模型；注意 prefilter（T9.3）在 triage 之前就处理了明确的转人工指令，两层各管一段（t51 用例刻意避开前置层以验证分诊门控本身）。
+- **补测说明（2026-09-04）**：`negative_sentiment` 分支此前是死代码，且断点有两处——① 全链路无人计算 sentiment（escalateNode 不传该字段）；② `routeAfterReview` 的 escalate 条件不看情绪，即使算出来也走不到 humanEscalation。已修复：新增 `src/sentiment.ts` 确定性打分（规则而非 LLM，转人工兜底不依赖模型可用性），turnStart 每轮打分入 state，路由与判定共用同一阈值常量（`DEFAULT_SENTIMENT_INTENSITY_THRESHOLD`，可经 escalationPolicy 覆盖）。t51-sentiment 的端到端用例刻意避开 `HUMAN_REQUEST_PATTERNS`（「我要投诉」会命中 prefilter 的 human_request 分支），并经 mutation 验证（临时禁用路由情绪分支 → 用例变红）。
 
 ### T5.2 交接包（Handoff Package）
 
@@ -763,9 +780,10 @@ describe("评测框架", () => {
 })
 ```
 
-**实现落点**（`src/eval/fixtures.ts` + `replay.ts` + `runner.ts`，测试 `src/__tests__/eval.test.ts` T7.1 组）
+**实现落点**（`src/eval/fixtures.ts` + `replay.ts` + `runner.ts`，测试 `src/__tests__/eval.test.ts` T7.1 组，6 条）
 
-- fixture 按专家类别分文件加载（`loadEvaluationFixtures`），批量回放走注入的 fake 外部服务，结果可复现；`runEvaluation()` 输出逐条判定 + 聚合指标；`eval/cli.ts` 提供命令行入口供 CI 调用。
+- fixture 按专家类别分文件加载（`loadEvaluationFixtures`），每条带 `script`（fake LLM 各 stage 剧本 + fake 向量库回包）+ `expectContains` / `expectedTools` / `context`；`runEvaluation()` 逐条真跑图后输出逐条判定 + 聚合指标；`eval/cli.ts` 提供命令行入口供 CI 调用。
+- **修正（2026-09-04）**：此前 `replay()` 直接 `return { ...fixture.replay }`——期望值和观测值都是 JSONL 手写，评测闭环与 Agent 真实行为完全无关（Klarna 章节的质量门禁实际在空转）。已改为真跑图：`runFixtureThroughGraph` 用 script 构造 fake LLM/向量库后 `buildGraph` 真跑，observed 全部从图输出计算（knowledgeHit=citations 非空、humanInvolved=escalation.required、deflected=非升级非兜底、latencyMs 实测、costUsd 按 token 估算、factuallyCorrect=expectContains 全中、toolCallCorrect=工具清单集合相等）。满意度不再编造——单轮回放拿不到用户评价，输出 null 而非手写数字。T7.1 组新增两条钉住本次修复：「观测值来自图的真实输出」「标注与图行为不一致时判定失败（回归探测）」。
 
 ### T7.2 指标计算（主次必须分明）
 
@@ -801,9 +819,10 @@ describe("质量门禁", () => {
 
 **实现要点**：门槛值上线前就写死进配置（Klarna 复盘：「上线前预先写死满意度下限门槛，破线即停止对外宣称收益」）。
 
-**实现落点**（`src/eval/quality-gate.ts`，测试 `eval.test.ts` T7.3 组）
+**实现落点**（`src/eval/quality-gate.ts` + `.github/workflows/rag-boot.yml` + `package.json` 的 `test:security` 脚本，测试 `eval.test.ts` T7.3 组，4 条）
 
-- `resolutionRate` 低于基线阈值 → 门禁判定失败（CI 据此阻断）；满意度下限写死在配置并在报告显式回显；安全类测试（租户隔离 / 动作确认 / Guardrails）在 CI 中 skip 视为失败（TDD 约定第 4 条的执行层）。
+- `resolutionRate` 低于基线阈值 → 门禁判定失败（CI 据此阻断）；满意度下限写死在配置并在报告显式回显；安全类测试（租户隔离 / 动作确认 / Guardrails）失败即阻断合并。
+- **修正（2026-09-04）**：① CI 接入——此前 rag-boot 没有任何 workflow（仓库唯一 workflow 的 paths 只匹配 bi-analyst），`SECURITY_TESTS_PASSED` 只读环境变量却无人喂值。已新增 `.github/workflows/rag-boot.yml`：typecheck → unit → integration（SQLite 用例，CI 现场编译 better-sqlite3）→ `test:security`（continue-on-error 捕获真实退出码）→ `eval:gate`（安全结果经 `SECURITY_TESTS_PASSED` 喂入门禁，安全挂了由门禁统一报出而非 CI 静默中断）。② 满意度门禁对 null 的处理——单轮回放拿不到满意度（ratedCaseCount=0），null 是「没有数据」而非「不达标」：无数据时不阻断但显式回显 `noData`，有数据低于下限必阻断（有测试钉住）。③ 基线对齐——`resolutionRateBaseline` 0.75 → 0.5：基线是「防退化下限」（当前 fixture 集含 5 条升级路径 + 1 条二次来访，真实值恰为 0.5），目标值应靠扩评测集与提实现逐步逼近，而不是写进门禁让它永远红。
 
 ---
 
@@ -836,9 +855,10 @@ describe("PII 治理", () => {
 })
 ```
 
-**实现落点**（`src/observability/pii.ts`，测试 `t8.test.ts` T8.2 组）
+**实现落点**（`src/observability/pii.ts` + `src/sqlite-saver.ts`，测试 `t8.test.ts` T8.2 组 + `src/__tests__/integration/t82-retention.test.ts`，2 条）
 
-- `AuditLog` 写入时自动脱敏手机号、地址；脱敏保形（保留前后缀与类型标记），排障所需的结构信息不破坏；实现 `RetentionTarget` 接口，超留存期的会话数据可被清理任务删除。与 T5.2 交接包的 `clearance` 分级共用同一套脱敏。
+- `AuditLog` 写入时自动脱敏手机号、地址；脱敏保形（保留前后缀与类型标记），排障所需的结构信息不破坏；实现 `RetentionTarget` 接口。与 T5.2 交接包的 `clearance` 分级共用同一套脱敏。
+- **修正（2026-09-04）**：第 2 条「超留存期的会话数据可被清理」此前只接了 AuditLog——会话数据本体（LangGraph checkpoint）从未接进留存体系。已补：`SqliteSaver` 实现 `RetentionTarget`（schema 加 `created_at` 列，老库迁移时存量记录从迁移时刻起算 TTL 而非立即过期；`purge()` 手工级联清理孤儿 writes），集成测试用注入时钟验证「超期清理 + 未过期可恢复」与「RetentionRunner session TTL 生效」两条。
 
 ### T8.3 知识库生命周期
 
@@ -959,6 +979,7 @@ describe("流式输出", () => {
 
 - 先审后发：先完整执行图并完成输出 Guardrails / Reviewer，再把通过终审的 `finalAnswer` 按 24 字符 chunk 依次 yield——测试断言 chunk 拼接与 finalAnswer 完全一致；未鉴权的流式请求直接抛 `TenantMissingError`，不存在绕过接入层的流式入口。
 - **补测说明（2026-09-03）**：t94 建立前 4 条规格中仅「chunk 拼接一致」有断言，「拦截内容替换为兜底话术」与「客户端断开后状态落盘」均无测试。已补齐：违规草稿被替换为安全话术（不含「保证/百分百/绝对」）、断开后 `MemorySaver.getTuple` 仍含 `finalAnswer`。
+- **再修正（2026-09-04）**：断开落盘用例此前在测试内重造了一个"语义相同"的 stream 替身（注释自陈），生产 `index.ts` 的 `stream()` 实际没被验证。已改为走生产入口 `createGraph({ checkpointer, ... }).stream()`（`CreateGraphOptions extends BuildGraphConfig`，可直接注入 checkpointer），替身代码删除。
 - **随之修复的两个真 bug**：① `escalateNode`——终审不通过时，违规草稿（如「保证百分百满意」）此前会拼进转人工话术一起发出，违反本条验收标准，已改为 `reviewRejected` 时改用纯兜底话术；② 修复引发 `pipeline-actions.test.ts` 挂掉，暴露 `extractAccountNumbers` 把 proposal id 的 13 位时间戳误判为未引用账户数字——此前测试能过全靠 bug ① 把确认单泄露出去。详见 T4.3 补测说明。
 
 ---
