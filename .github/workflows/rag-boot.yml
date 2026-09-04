@@ -1,0 +1,60 @@
+name: rag-boot
+
+on:
+  push:
+    paths:
+      - "apps/rag-boot/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/rag-boot.yml"
+  pull_request:
+    paths:
+      - "apps/rag-boot/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/rag-boot.yml"
+
+concurrency:
+  group: rag-boot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/rag-boot
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: pnpm/action-setup@0c17529a66aca453f9227af23103ed11469b1e47
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          # ubuntu-latest 自带 build-essential，pnpm install 时 better-sqlite3
+          # 会现场编译成与该 Node 版本匹配的 ABI，integration（SQLite）用例因此可跑。
+          node-version: 22.14.0
+          cache: pnpm
+      - name: Install
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Unit
+        run: pnpm test:unit
+      - name: Integration (SQLite checkpointer & retention)
+        run: pnpm test:integration
+      # 安全类测试与质量门禁的对应关系（quality-gate.config.json 的 securityTests.required）：
+      #   tenant-isolation      → security.test.ts
+      #   action-confirmation   → t53-proposal.test.ts / pipeline-actions（在 unit 全集内）
+      #   guardrails            → t41 / t42 / t43
+      # 用 continue-on-error 把真实结果交给门禁统一裁决：安全挂了由 eval:gate 以
+      # securityTestsPassed=false 报出具体失败，而不是让 CI 静默停在这一步。
+      - name: Security tests (gate input)
+        id: security
+        continue-on-error: true
+        run: pnpm test:security
+      - name: Evaluation quality gate
+        run: |
+          if [ "${{ steps.security.outcome }}" = "success" ]; then
+            echo "SECURITY_TESTS_PASSED=true" >> "$GITHUB_ENV"
+          fi
+          pnpm eval:gate

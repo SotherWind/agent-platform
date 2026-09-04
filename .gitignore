@@ -75,3 +75,6 @@ Desktop.ini
 # WorkBuddy workspace data (agent memory, session state)
 .workbuddy/
 .workbuddy-ai/
+
+# rag-boot 安全门禁报告的临时输出
+apps/rag-boot/security-report.json
