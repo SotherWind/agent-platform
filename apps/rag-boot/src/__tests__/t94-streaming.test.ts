@@ -8,7 +8,7 @@
  * - 「流式中断（客户端断开）时会话状态仍正确落盘」（清单 885 行）
  */
 import { MemorySaver } from "@langchain/langgraph";
-import { buildGraph, createGraph } from "../index";
+import { createGraph } from "../index";
 import { createFakeLlm } from "../llm/fake";
 import type { Llm, LlmRequest, LlmResponse } from "../llm/types";
 import type { RetrievedChunk } from "../schema";
@@ -127,32 +127,24 @@ describe("T9.4 流式输出", () => {
         review: JSON.stringify({ passed: true, violations: [] }),
       },
     });
-    const graph = await buildGraph({
+    // 走生产入口（index.ts stream()）而不是测试内替身：
+    // 此前这条用例重造了一个"语义相同"的 stream 替身（注释自陈），
+    // 等于清单第 2 条从未验证过生产代码。checkpointer 经
+    // CreateGraphOptions（extends BuildGraphConfig）注入。
+    const api = await createGraph({
       checkpointer: saver,
       vectorStore: vectorStoreReturning(),
       reranker: null,
       llms: { simple: model, small: model, large: model },
     });
-    const graphApi = {
-      stream: async function* (input: Record<string, unknown>, config?: unknown) {
-        // 与 index.ts stream() 相同的先审后发语义：先 invoke 完整图，再发 chunk
-        const result = await graph.invoke(
-          input as never,
-          config as never,
-        );
-        const answer = (result as { finalAnswer?: string }).finalAnswer ?? "";
-        for (let i = 0; i < answer.length; i += 24) {
-          yield answer.slice(i, i + 24);
-        }
-      },
-    };
 
-    const gen = graphApi.stream(
+    const gen = api.stream(
       {
         query: "退款规则",
         tenantId: "tenant-a",
+        authenticated: true,
         threadId: "t94-disconnect",
-        messages: [],
+        history: [],
       },
       { configurable: { thread_id: "t94-disconnect" } },
     );
