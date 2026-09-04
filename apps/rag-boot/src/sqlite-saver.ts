@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS checkpoints (
   type           TEXT,
   checkpoint     BLOB,
   metadata       BLOB,
+  created_at     INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
 );
 CREATE TABLE IF NOT EXISTS writes (
@@ -96,17 +97,33 @@ CREATE INDEX IF NOT EXISTS idx_writes_lookup
 export interface SqliteSaverOptions {
   /** 传 ":memory:" 时用临时库（仅测试 / 单进程开发） */
   path?: string;
+  /** 时钟注入：测试用它控制 created_at，验证留存清理边界 */
+  clock?: () => number;
 }
 
 /** 落盘 checkpointer：进程重启后同一文件可恢复 checkpoint */
 export class SqliteSaver extends BaseCheckpointSaver {
+  // T8.2 留存清理：实现 RetentionTarget，由 RetentionRunner 按 session TTL 调用 purge
+  readonly name = "checkpoint-store";
+  readonly kind = "session" as const;
+
   private readonly db: Database.Database;
+  private readonly clock: () => number;
 
   constructor(options: SqliteSaverOptions = {}) {
     super();
     this.db = new Database(options.path ?? ":memory:");
+    this.clock = options.clock ?? Date.now;
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
+    // 老库迁移：补 created_at 列。存量记录从迁移时刻起算 TTL（填 0 会导致
+    // 升级后第一次清理就把全部存量 checkpoint 当过期删掉）。
+    try {
+      this.db.exec("ALTER TABLE checkpoints ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0");
+    } catch {
+      // 新库 exec(SCHEMA) 已带该列——忽略重复列错误
+    }
+    this.db.prepare("UPDATE checkpoints SET created_at = ? WHERE created_at = 0").run(this.clock());
   }
 
   /** 显式声明：避免 TS 认为 serde 未初始化（基类构造函数里已赋默认值） */
@@ -234,8 +251,8 @@ export class SqliteSaver extends BaseCheckpointSaver {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO checkpoints
-         (thread_id, checkpoint_ns, checkpoint_id, parent_id, type, checkpoint, metadata)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (thread_id, checkpoint_ns, checkpoint_id, parent_id, type, checkpoint, metadata, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         threadId,
@@ -245,6 +262,7 @@ export class SqliteSaver extends BaseCheckpointSaver {
         "json",
         await this.serialize(checkpoint),
         await this.serialize(metadata),
+        this.clock(),
       );
 
     return {
@@ -272,9 +290,13 @@ export class SqliteSaver extends BaseCheckpointSaver {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
-    const entries = writes as unknown as Array<[string, string, unknown]>;
+    // PendingWrite 是 [channel, value] 二元组（见文件头类型声明与
+    // @langchain/langgraph-checkpoint 的 `type PendingWrite<Channel> = [Channel, Value]`）。
+    // taskId 由本方法单独入参给出；getTuple 返回的 CheckpointPendingWrite 才是三元组
+    // [taskId, channel, value]——两者形状不同，不要互相套用。
+    const entries = writes as PendingWrite[];
     for (let idx = 0; idx < entries.length; idx++) {
-      const [, channel, value] = entries[idx];
+      const [channel, value] = entries[idx];
       const [type, bytes] = await this.serde.dumpsTyped(value);
       stmt.run(
         threadId,
@@ -292,6 +314,24 @@ export class SqliteSaver extends BaseCheckpointSaver {
   async deleteThread(threadId: string): Promise<void> {
     this.db.prepare(`DELETE FROM checkpoints WHERE thread_id = ?`).run(threadId);
     this.db.prepare(`DELETE FROM writes WHERE thread_id = ?`).run(threadId);
+  }
+
+  /**
+   * T8.2 留存清理（RetentionTarget）：删除 created_at 早于 cutoff 的 checkpoint
+   * 及其孤儿 writes，返回删除的 checkpoint 数。
+   * writes 表未启用外键级联（避免压垮 checkpoint 写入路径），手工清理孤儿行。
+   */
+  purge(olderThanMs: number): number {
+    const { changes } = this.db
+      .prepare(`DELETE FROM checkpoints WHERE created_at < ?`)
+      .run(olderThanMs);
+    this.db
+      .prepare(
+        `DELETE FROM writes
+         WHERE checkpoint_id NOT IN (SELECT checkpoint_id FROM checkpoints)`,
+      )
+      .run();
+    return changes;
   }
 }
 
