@@ -1,46 +1,43 @@
 import { loadEvaluationFixtures } from "./fixtures";
 import { calculateMetrics, calculateSavingsConclusion } from "./metrics";
-import { createFakeExternalServices } from "./replay";
+import { runFixtureThroughGraph } from "./replay";
 import type { EvaluationOptions, EvaluationReport, EvaluationResult } from "./types";
 
+/**
+ * 逐条 fixture 真跑图（串行：fake 状态相互隔离，报告顺序稳定可复现），
+ * 拿图的真实行为与人工标注的 expected 比对。
+ */
 export async function runEvaluation(options: EvaluationOptions = {}): Promise<EvaluationReport> {
   const seed = options.seed ?? 20260903;
   const fixtures = await loadEvaluationFixtures(options.fixtureDir);
-  const fakeServices = createFakeExternalServices(seed);
-  const results: EvaluationResult[] = fixtures.map((fixture) => {
-    const observed = fakeServices.replay(
-      {
-        caseId: fixture.id,
-        category: fixture.category,
-        seed,
-        replayToken: "",
-      },
-      fixture,
-    );
-    const passed =
-      fixture.expected.knowledgeHit === observed.knowledgeHit &&
-      fixture.expected.factuallyCorrect === observed.factuallyCorrect &&
-      fixture.expected.toolCallCorrect === observed.toolCallCorrect;
+  const results: EvaluationResult[] = [];
 
-    return {
+  for (const fixture of fixtures) {
+    const { observation } = await runFixtureThroughGraph(fixture, { seed });
+    const passed =
+      fixture.expected.knowledgeHit === observation.knowledgeHit &&
+      fixture.expected.factuallyCorrect === observation.factuallyCorrect &&
+      fixture.expected.toolCallCorrect === observation.toolCallCorrect;
+
+    results.push({
       caseId: fixture.id,
       category: fixture.category,
       query: fixture.query,
       passed,
       expected: fixture.expected,
-      observed,
-      knowledgeHit: observed.knowledgeHit,
-      factuallyCorrect: observed.factuallyCorrect,
-      toolCallCorrect: observed.toolCallCorrect,
-      humanInvolved: observed.humanInvolved,
-      secondVisit: observed.secondVisit,
-      deflected: observed.deflected,
-      resolved: !observed.humanInvolved && !observed.secondVisit,
-      latencyMs: observed.latencyMs,
-      costUsd: observed.costUsd,
-      satisfaction: observed.satisfaction,
-    };
-  });
+      observed: observation,
+      knowledgeHit: observation.knowledgeHit,
+      factuallyCorrect: observation.factuallyCorrect,
+      toolCallCorrect: observation.toolCallCorrect,
+      humanInvolved: observation.humanInvolved,
+      secondVisit: observation.secondVisit,
+      deflected: observation.deflected,
+      resolved: !observation.humanInvolved && !observation.secondVisit,
+      latencyMs: observation.latencyMs,
+      costUsd: observation.costUsd,
+      satisfaction: observation.satisfaction,
+    });
+  }
 
   const report: EvaluationReport = {
     seed,

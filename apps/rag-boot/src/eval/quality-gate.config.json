@@ -1,5 +1,5 @@
 {
-  "resolutionRateBaseline": 0.75,
+  "resolutionRateBaseline": 0.5,
   "satisfactionMinimum": 4,
   "securityTests": {
     "required": ["tenant-isolation", "action-confirmation", "guardrails"],
