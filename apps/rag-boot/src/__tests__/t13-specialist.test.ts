@@ -123,4 +123,32 @@ describe("专家节点隔离", () => {
     // 注册表声明与实际可返回的状态集合一致
     expect(Object.keys(SPECIALIST_REGISTRY)).toContain("billing");
   });
+
+  it("每专家持有独立提示词版本轨（promptPath 指向专属提示词，不再共用模板）", async () => {
+    // 清单 257/272 行：独立提示词版本轨 + 注册表 promptPath 字段。
+    // 此前六类专家共用 SPECIALIST_PROMPT + {{category}} 占位，谈不上独立版本轨。
+    for (const category of Object.keys(SPECIALIST_REGISTRY)) {
+      expect(getSpecialist(category).promptPath).toBe(`prompts/specialists#${category}`);
+    }
+
+    const llm = createFakeLlm({
+      reply: JSON.stringify({ status: "resolved", answer: "ok", citations: [] }),
+    });
+    await runSpecialist("billing", baseInput, { llm });
+    const billingSystem = llm.calls[0]?.system ?? "";
+    llm.calls.length = 0;
+    await runSpecialist("order", { ...baseInput, categories: ["order"] }, { llm });
+    const orderSystem = llm.calls[0]?.system ?? "";
+
+    // 提示词内容按领域分化，且占位符已被领域文案取代
+    expect(billingSystem).toContain("账单");
+    expect(billingSystem).toContain("发票");
+    expect(orderSystem).toContain("订单");
+    expect(orderSystem).toContain("物流");
+    expect(billingSystem).not.toBe(orderSystem);
+    expect(billingSystem).not.toContain("{{category}}");
+
+    // 未知类别回落 general 提示词（与注册表回落策略一致）
+    expect(getSpecialist("nonexistent").promptPath).toBe("prompts/specialists#general");
+  });
 });

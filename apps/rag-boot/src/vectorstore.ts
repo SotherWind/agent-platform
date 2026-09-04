@@ -351,7 +351,11 @@ export class VectorStore implements VectorStoreType {
   async addDocuments(docs: Document[], options: IngestOptions): Promise<number> {
     if (docs.length === 0) return 0;
 
+    let replacedExisting = false;
     if (options.replace !== false) {
+      // 审计语义按真实状态而非调用意图：文档此前不存在是 create，覆盖了才记 replace。
+      // 此前无条件记 "replace"，导致首次写入的审计动作是错的。
+      replacedExisting = await this.documentExists(options.documentId, options.tenantId);
       await this.deleteDocumentVectors(options.documentId, options.tenantId);
     }
 
@@ -361,7 +365,7 @@ export class VectorStore implements VectorStoreType {
       await this.store.addDocuments(batch);
     }
     await this.onKnowledgeChange?.({
-      action: options.replace === false ? "create" : "replace",
+      action: options.replace === false || !replacedExisting ? "create" : "replace",
       tenantId: options.tenantId,
       documentId: options.documentId,
       version: options.version ?? 1,
@@ -379,6 +383,21 @@ export class VectorStore implements VectorStoreType {
     const docs = await loader.load();
     const chunks = await splitDocuments(filePath, docs, options);
     return this.addDocuments(chunks, { ...options, source: options.source ?? filePath });
+  }
+
+  /**
+   * 判断 documentId 下是否已有向量（供审计区分 create/replace）。
+   * 生产路径用 Qdrant count；拿不到 client 的 store（测试里的轻量 fake）保守按
+   * "存在"处理——保持 replace 语义，不强迫每个 fake 实现查询能力。
+   */
+  private async documentExists(documentId: string, tenantId: string): Promise<boolean> {
+    const client = this.store.client;
+    const collectionName = this.store.collectionName;
+    if (!client || !collectionName) return true;
+    const { count } = await client.count(collectionName, {
+      filter: documentFilter(documentId, tenantId),
+    });
+    return count > 0;
   }
 
   private async deleteDocumentVectors(documentId: string, tenantId: string): Promise<void> {

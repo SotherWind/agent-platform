@@ -7,7 +7,7 @@
  * 专家之间没有共享可变状态，也没有自然语言对话。
  */
 import { SpecialistOutputSchema, type SpecialistOutput, type RerankedChunk } from "../schema";
-import { SPECIALIST_PROMPT, renderPrompt } from "../prompts";
+import { getSpecialistPrompt } from "../prompts/specialists";
 import { enforceToolBoundary, getSpecialist } from "./specialists";
 import { parseJsonLoose } from "../guardrails/output";
 import type { Llm, LlmResponse } from "../llm/types";
@@ -59,11 +59,12 @@ export async function runSpecialist(
       toolRequests: [],
       rejectedToolRequests: [],
       citations: [],
-      promptVersion: def.promptVersion,
+      promptVersion: getSpecialistPrompt(category).version,
     });
   }
 
-  const system = renderPrompt(SPECIALIST_PROMPT, { category });
+  // 每专家独立提示词（独立版本轨，T1.3）：不再是同一模板 + {{category}} 占位
+  const system = getSpecialistPrompt(category).system;
 
   const prompt = [
     `【用户问题】${input.sanitizedQuery || input.query}`,
@@ -105,7 +106,7 @@ export async function runSpecialist(
       toolRequests: [],
       rejectedToolRequests: [],
       citations: [],
-      promptVersion: def.promptVersion,
+      promptVersion: getSpecialistPrompt(category).version,
     });
   }
 
@@ -138,7 +139,7 @@ export async function runSpecialist(
     citations: Array.isArray(parsed.citations)
       ? parsed.citations.filter((c): c is string => typeof c === "string")
       : [],
-    promptVersion: def.promptVersion,
+    promptVersion: getSpecialistPrompt(category).version,
   });
 }
 

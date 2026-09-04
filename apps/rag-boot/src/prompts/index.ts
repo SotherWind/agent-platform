@@ -5,6 +5,8 @@
  * 提示词改动是**可回放**的变更——T7.1 评测回放时可按 promptVersion 定位回归来源。
  */
 
+import { getSpecialistPrompt } from "./specialists";
+
 export const PROMPT_VERSIONS = {
   triage: "v1",
   rewrite: "v1",
@@ -55,23 +57,12 @@ export const REWRITE_PROMPT: Prompt = {
 5. 长度控制在 30 字以内。`,
 };
 
-/** T1.3 专家节点：约 800 token 的聚焦提示词，而非 4000 token 全量提示词 */
-export const SPECIALIST_PROMPT: Prompt = {
-  name: "specialist",
-  version: PROMPT_VERSIONS.specialist,
-  system: `你是{{category}}领域的客服专家。你只能使用本域被授权的工具，且只能处理本域问题。
-
-返回三种结果之一（严格 JSON，不要 markdown 代码块）：
-{"status":"resolved","answer":"<给用户的最终答复>","citations":["<引用到的 chunkId>"]}
-{"status":"needsOrchestrator","partialAnswer":"<已有的部分结论>","gap":"<还缺什么>"}
-{"status":"escalate","reason":"<为什么必须转人工>"}
-
-硬规则：
-1. 只依据检索到的上下文与工具返回结果作答。上下文里没有的数字、金额、日期一律不许编造。
-2. 需要实时数据但本轮没有对应工具调用结果时，返回 needsOrchestrator，不要凭记忆作答。
-3. 任何改变用户状态的操作（退款、改套餐、重置凭证）只能"提议"，禁止执行。
-4. 不许承诺上下文不支持的结果，禁用"一定""保证""百分百"等绝对化表述。`,
-};
+/**
+ * T1.3 专家提示词已迁往 ./specialists.ts（SPECIALIST_PROMPTS，每专家独立版本轨）。
+ * 此前六类专家共用本文件单一模板 + {{category}} 占位，谈不上独立版本轨。
+ * PROMPT_VERSIONS.specialist 保留为「专家提示词」整体的版本锚点；
+ * 单专家的实际版本以 SPECIALIST_PROMPTS[category].version 为准。
+ */
 
 /** T1.4 编排器：只拼接不重做，且无任何工具 */
 export const ORCHESTRATOR_PROMPT: Prompt = {
@@ -137,7 +128,12 @@ export function getPrompt(name: PromptName): Prompt {
     case "rewrite":
       return REWRITE_PROMPT;
     case "specialist":
-      return SPECIALIST_PROMPT;
+      // 兜底入口：未指定具体专家时给 general 轨；各专家的独立提示词走 getSpecialistPrompt
+      return {
+        name: "specialist",
+        version: PROMPT_VERSIONS.specialist,
+        system: getSpecialistPrompt("general").system,
+      };
     case "orchestrator":
       return ORCHESTRATOR_PROMPT;
     case "generate":

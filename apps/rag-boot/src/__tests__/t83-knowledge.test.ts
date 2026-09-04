@@ -105,6 +105,40 @@ describe("T8.3 知识库生命周期", () => {
     expect(audit[1]?.version).toBe(3);
   });
 
+  it("审计动作按真实存在性判定：首写 create、覆盖才记 replace", async () => {
+    // 此前实现无条件记 "replace"，首次写入的审计动作是错的（语义反了）。
+    // 修好后按 documentExists 判定；这里的 fake 带 client.count，模拟真实 Qdrant 的
+    // 存在性查询（轻量 fake 无 client 时保守按"存在"处理，见上面的用例）。
+    const audit: KnowledgeChangeAuditEntry[] = [];
+    let storedChunks = 0;
+    const fake = {
+      addedDocs: [] as Document[],
+      deletedFilters: [] as unknown[],
+      addDocuments: async (docs: Document[]) => {
+        storedChunks += docs.length;
+        return docs.length;
+      },
+      delete: async (opts: { filter?: unknown }) => {
+        fake.deletedFilters.push(opts.filter);
+        storedChunks = 0;
+      },
+      client: { count: async () => ({ count: storedChunks }) },
+      collectionName: "test-collection",
+    };
+    const Ctor = VectorStore as unknown as new (
+      store: unknown,
+      onKnowledgeChange?: (entry: KnowledgeChangeAuditEntry) => void | Promise<void>,
+    ) => VectorStoreType;
+    const store = new Ctor(fake, (entry) => {
+      audit.push({ ...entry });
+    });
+
+    await store.addDocuments([doc("v1")], { tenantId: "t1", documentId: "doc-new" });
+    await store.addDocuments([doc("v2")], { tenantId: "t1", documentId: "doc-new" });
+
+    expect(audit.map((e) => e.action)).toEqual(["create", "replace"]);
+  });
+
   it("replace 替换后旧向量不残留（端到端语义：同 id 检索只出新内容）", async () => {
     // 用可查询的 fake store 模拟「按 documentId 定位删除」的净效果
     const rows: Array<{ id: string; documentId: string; tenantId: string; text: string }> = [];

@@ -1,4 +1,6 @@
 import { StatelessMcpAdapter, buildMcpMeta, type McpToolCallRequest } from "../mcp/stateless";
+import { proposalToInputRequired, resumeToConfirmation } from "../mcp/confirmation";
+import type { ActionProposal } from "../actions/proposal";
 
 describe("T3.4 MCP 无状态适配", () => {
   it("首个请求直接调用工具，不发送握手或 session id", async () => {
@@ -84,5 +86,85 @@ describe("T3.4 MCP 无状态适配", () => {
     });
     expect(resumed.status).toBe("ok");
     expect(resumeCarriedState).toBe(true); // 状态由调用方携带，服务端不持有
+  });
+});
+
+describe("T3.4 ↔ T5.3 桥接：确认状态走 MRTR", () => {
+  // T3.4 实现要点（清单 500 行）「确认状态（T5.3）走 MRTR 而不是长连接反向请求」
+  // 此前 StatelessMcpAdapter 只有协议形状，与 T5.3 之间没有任何桥接代码。
+  const proposal: ActionProposal = {
+    id: "prop-1",
+    action: "refund",
+    params: { orderId: "o-1" },
+    summary: "确认退款 100 元？",
+    tenantId: "t1",
+    threadId: "th-1",
+    principal: "user-1",
+    confirmToken: "tok-abc",
+    createdAt: 1000,
+    expiresAt: 2_000_000,
+    status: "pending",
+    idempotencyKey: "idem-1",
+  };
+
+  it("确认请求以 input_required 返回，确认状态封装进 requestState", () => {
+    const response = proposalToInputRequired(proposal);
+    if (response.status !== "input_required") throw new Error("expected input_required");
+
+    expect(response.inputRequests[0]).toMatchObject({
+      id: "confirm",
+      prompt: proposal.summary,
+      type: "choice",
+      options: ["confirm", "cancel"],
+    });
+    expect(response.requestState).toBeTruthy();
+    expect(response.requestState).not.toBe(proposal.confirmToken); // 不透明串，不是明文令牌
+  });
+
+  it("resume 回带 requestState 可解出 T5.3 confirm 入参（往返一致）", () => {
+    const response = proposalToInputRequired(proposal);
+    if (response.status !== "input_required") throw new Error("expected input_required");
+
+    const confirmation = resumeToConfirmation({
+      method: "tools/call",
+      name: "refund",
+      arguments: { orderId: "o-1" },
+      inputResponses: { confirm: "confirm" },
+      requestState: response.requestState,
+    });
+
+    expect(confirmation).toEqual({
+      proposalId: proposal.id,
+      confirmToken: proposal.confirmToken,
+      expiresAt: proposal.expiresAt,
+      confirmed: true,
+    });
+  });
+
+  it("用户取消时 confirmed=false，且解码过程不持有任何服务端状态", () => {
+    const response = proposalToInputRequired(proposal);
+    if (response.status !== "input_required") throw new Error("expected input_required");
+
+    // encode/decode 是纯函数——状态全在 requestState 里，天然满足「任意实例可响应」
+    const cancelled = resumeToConfirmation({
+      method: "tools/call",
+      name: "refund",
+      arguments: {},
+      inputResponses: { confirm: "cancel" },
+      requestState: response.requestState,
+    });
+    expect(cancelled.confirmed).toBe(false);
+  });
+
+  it("非法 requestState 拒绝解码（fail-closed）", () => {
+    expect(() =>
+      resumeToConfirmation({
+        method: "tools/call",
+        name: "refund",
+        arguments: {},
+        inputResponses: { confirm: "confirm" },
+        requestState: "garbage-state",
+      }),
+    ).toThrow();
   });
 });

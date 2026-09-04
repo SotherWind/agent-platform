@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Document } from "@langchain/core/documents";
-import { createVectorStore } from "./vectorstore";
-import { createApiReranker } from "./rerank";
+import { createVectorStore } from "../src/vectorstore";
+import { createApiReranker } from "../src/rerank";
 
 const TENANT_ID = "chunk-eval";
 const DOCUMENT_ID = "t-1";

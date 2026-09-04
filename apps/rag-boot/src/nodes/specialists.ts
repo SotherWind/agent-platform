@@ -16,8 +16,8 @@ import type { ToolRequest } from "../schema";
 
 export interface SpecialistDefinition {
   category: string;
-  /** 提示词版本轨：改动可回放定位（T0.5 / T7.1） */
-  promptVersion: string;
+  /** 本专家独立提示词的路径标识（清单 272 行注册表形状），对应 prompts/specialists.ts */
+  promptPath: string;
   /** 仅限本域的工具子集——爆炸半径由这份清单限死 */
   toolNames: string[];
   /** 独立评测集路径（T7.1） */
@@ -29,7 +29,7 @@ export interface SpecialistDefinition {
 export const SPECIALIST_REGISTRY: Record<string, SpecialistDefinition> = {
   billing: {
     category: "billing",
-    promptVersion: "v1",
+    promptPath: "prompts/specialists#billing",
     // 能读账单、提议套餐变更；不能改集成配置
     toolNames: ["get_billing_summary", "propose_plan_change", "create_ticket"],
     evalSetPath: "src/eval/fixtures/billing.jsonl",
@@ -37,7 +37,7 @@ export const SPECIALIST_REGISTRY: Record<string, SpecialistDefinition> = {
   },
   integration: {
     category: "integration",
-    promptVersion: "v1",
+    promptPath: "prompts/specialists#integration",
     // 能读集成配置、提议重置凭证；不能动账单
     toolNames: ["get_integration_status", "propose_credential_reset", "create_ticket"],
     evalSetPath: "src/eval/fixtures/integration.jsonl",
@@ -45,28 +45,28 @@ export const SPECIALIST_REGISTRY: Record<string, SpecialistDefinition> = {
   },
   account: {
     category: "account",
-    promptVersion: "v1",
+    promptPath: "prompts/specialists#account",
     toolNames: ["get_account_profile", "create_ticket"],
     evalSetPath: "src/eval/fixtures/account.jsonl",
     priority: 2,
   },
   technical: {
     category: "technical",
-    promptVersion: "v1",
+    promptPath: "prompts/specialists#technical",
     toolNames: ["get_service_status", "create_ticket"],
     evalSetPath: "src/eval/fixtures/technical.jsonl",
     priority: 4,
   },
   order: {
     category: "order",
-    promptVersion: "v1",
+    promptPath: "prompts/specialists#order",
     toolNames: ["get_order_status", "propose_refund", "create_ticket"],
     evalSetPath: "src/eval/fixtures/order.jsonl",
     priority: 3,
   },
   general: {
     category: "general",
-    promptVersion: "v1",
+    promptPath: "prompts/specialists#general",
     // 通用专家只有建单能力，没有业务读工具
     toolNames: ["create_ticket"],
     evalSetPath: "src/eval/fixtures/general.jsonl",
