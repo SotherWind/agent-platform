@@ -28,7 +28,13 @@ import { runSpecialists } from "./nodes/specialist";
 import { getSpecialist } from "./nodes/specialists";
 import { orchestrate } from "./nodes/orchestrator";
 import { generate, EMPTY_RETRIEVAL_FALLBACK } from "./nodes/generate";
-import { evaluateEscalation, buildHandoffPackage, isHumanRequest } from "./escalation";
+import {
+  evaluateEscalation,
+  buildHandoffPackage,
+  isHumanRequest,
+  DEFAULT_SENTIMENT_INTENSITY_THRESHOLD,
+} from "./escalation";
+import { scoreSentiment } from "./sentiment";
 import { executeTool, assertToolRegistry, type AgentTool } from "./tools/contract";
 import { InMemoryIdempotencyStore, type IdempotencyStore } from "./tools/idempotency";
 import { InMemoryTicketStore, TicketService } from "./tickets";
@@ -252,12 +258,21 @@ function routeAfterTools(
   return "specialist";
 }
 
-function routeAfterReview(state: State): "output" | "escalate" {
+function routeAfterReview(
+  state: State,
+  sentimentThreshold: number = DEFAULT_SENTIMENT_INTENSITY_THRESHOLD,
+): "output" | "escalate" {
   if (state.terminationReason === "all_models_failed") return "escalate";
   if (state.review && !state.review.passed) return "escalate";
   if (state.consecutiveFallbackTurns >= 2) return "escalate";
   if (state.consecutiveLowConfidenceTurns >= 2) return "escalate";
   if (state.consecutiveReviewFailures >= 2) return "escalate";
+  // T5.1 情绪触发。此前 evaluateEscalation 支持该分支但路由不看 sentiment，
+  // 于是「极度负面」永远走不到 humanEscalation —— 情绪触发是死代码。
+  // 阈值必须与 evaluateEscalation 一致，否则会出现判定要升级、路由却直出的矛盾。
+  if (state.sentiment === "negative" && state.sentimentIntensity >= sentimentThreshold) {
+    return "escalate";
+  }
   return "output";
 }
 
@@ -293,6 +308,9 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
   const graphTracer = configs.tracer ?? defaultTracer;
   const actionGuardrails = configs.actionGuardrails;
   const maxToolTurns = Math.max(1, configs.maxToolTurns ?? 5);
+  // 情绪触发阈值：路由判断与 evaluateEscalation 共用一份配置，避免两处漂移
+  const sentimentThreshold =
+    configs.escalationPolicy?.sentimentIntensityThreshold ?? DEFAULT_SENTIMENT_INTENSITY_THRESHOLD;
   const maxContextTokens = configs.maxContextTokens ?? 1500;
   const maxChunks = configs.maxChunks ?? 5;
   const confidenceThreshold = configs.confidenceThreshold ?? 0.35;
@@ -304,8 +322,14 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
     if (!state.tenantId) throw new TenantMissingError();
     const traceId = state.traceId || graphTracer.startTrace();
     const nextTurn = state.turnCount + 1;
+    // T5.1：情绪在本轮入口打分，escalateNode 靠它触发 negative_sentiment。
+    // 此前全链路无人计算，evaluateEscalation 的情绪分支实际上是死代码。
+    // 每轮重算 => 天然不跨轮残留，无需像 transcriptConfidence 那样手工清空。
+    const sentiment = scoreSentiment(state.query);
     return {
       traceId,
+      sentiment: sentiment.sentiment,
+      sentimentIntensity: sentiment.intensity,
       threadId: state.threadId || `thread-${traceId.slice(0, 12)}`,
       confirmationProposalId: state.confirmationProposalId,
       confirmationToken: state.confirmationToken,
@@ -869,6 +893,9 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
     const decision = evaluateEscalation(
       {
         userAskedForHuman: isHumanRequest(state.query),
+        // 本轮 turnStart 打的分（T5.1 negative_sentiment 触发源）
+        sentiment: state.sentiment,
+        sentimentIntensity: state.sentimentIntensity,
         consecutiveFallbackTurns: state.consecutiveFallbackTurns,
         consecutiveReviewFailures: state.consecutiveReviewFailures,
         consecutiveLowConfidenceTurns: state.consecutiveLowConfidenceTurns,
@@ -999,10 +1026,14 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
         escalate: "humanEscalation",
       },
     )
-    .addConditionalEdges("outputReview", routeAfterReview, {
-      output: "output",
-      escalate: "humanEscalation",
-    })
+    .addConditionalEdges(
+      "outputReview",
+      (state) => routeAfterReview(state, sentimentThreshold),
+      {
+        output: "output",
+        escalate: "humanEscalation",
+      },
+    )
     .addEdge("humanEscalation", "output")
     .addEdge("output", END);
 

@@ -79,6 +79,13 @@ export interface EscalationSignals {
   policyViolation?: boolean;
 }
 
+/**
+ * 情绪触发转人工的默认强度阈值。
+ * agent.ts 的 routeAfterReview 复用同一常量——路由判断与 evaluateEscalation 的判定
+ * 必须一致，否则会出现「判定要升级、路由却直出」的死代码。
+ */
+export const DEFAULT_SENTIMENT_INTENSITY_THRESHOLD = 0.8;
+
 export interface EscalationPolicyConfig {
   maxConsecutiveFallbackTurns?: number;
   maxConsecutiveReviewFailures?: number;
@@ -96,7 +103,8 @@ export function evaluateEscalation(
   const maxFallback = config.maxConsecutiveFallbackTurns ?? 2;
   const maxReview = config.maxConsecutiveReviewFailures ?? 2;
   const maxLowConf = config.maxConsecutiveLowConfidenceTurns ?? 2;
-  const sentimentThreshold = config.sentimentIntensityThreshold ?? 0.8;
+  const sentimentThreshold =
+    config.sentimentIntensityThreshold ?? DEFAULT_SENTIMENT_INTENSITY_THRESHOLD;
 
   const triggers: EscalationTrigger[] = [];
   const reasons: string[] = [];

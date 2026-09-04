@@ -107,6 +107,11 @@ export const AgentState = new StateSchema({
   consecutiveLowConfidenceTurns: z.number().default(0),
   consecutiveReviewFailures: z.number().default(0),
 
+  // ---- T5.1 情绪判定（negative_sentiment 触发的输入来源）----
+  // 每轮由 turnStart 对 query 重新打分，因此天然不跨轮残留。
+  sentiment: z.enum(["negative", "neutral", "positive"]).default("neutral"),
+  sentimentIntensity: z.number().default(0),
+
   // ---- 输出 ----
   finalAnswer: z.string().default(""),
   citations: z.array(AnswerCitationSchema).default(() => []),
