@@ -1,0 +1,21 @@
+.ask-chart {
+  margin: 0 0 var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.ask-chart__title {
+  margin: 0;
+  padding: var(--space-3) var(--space-4) 0;
+  font-weight: 500;
+}
+
+.ask-chart__canvas {
+  width: 100%;
+  height: 320px;
+}
+
+.ask-chart .ant-table-wrapper {
+  padding: var(--space-3);
+}

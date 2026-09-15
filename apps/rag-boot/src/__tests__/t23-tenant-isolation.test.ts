@@ -79,7 +79,7 @@ describe("租户隔离", () => {
   });
 
   it("公开入口即使声称已鉴权，缺失租户身份同样 fail-closed", async () => {
-    const api = await createGraph({ reranker: null });
+    const api = await createGraph({ reranker: null, llms: {}, vectorStore: dirtyVectorStore([]) });
     await expect(
       api.invoke({ query: "问题", tenantId: "", authenticated: true, history: [] } as never),
     ).rejects.toBeInstanceOf(TenantMissingError);

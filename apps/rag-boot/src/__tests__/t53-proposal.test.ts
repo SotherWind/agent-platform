@@ -57,6 +57,7 @@ describe("T5.3 动作确认三段分离", () => {
       service.confirm({
         proposalId: proposal.id,
         token: proposal.confirmToken,
+        tenantId: "t",
         threadId: "th",
         principal: "p",
       });
@@ -89,6 +90,7 @@ describe("T5.3 动作确认三段分离", () => {
     const confirmed = service.confirm({
       proposalId: proposal.id,
       token: proposal.confirmToken,
+      tenantId: "t",
       threadId: "th",
       principal: "p",
     });
@@ -104,6 +106,8 @@ describe("T5.3 动作确认三段分离", () => {
           principal: "p",
           turnIndex: 1,
           confirmToken: token,
+          confirmationProposalId: proposal.id,
+          verifyConfirmation: service.verifyConfirmation.bind(service),
           idempotency: new InMemoryIdempotencyStore(),
           audit: () => {},
         }).then((value) => value.result),
@@ -138,6 +142,7 @@ describe("T5.3 动作确认三段分离", () => {
     const confirmed = service.confirm({
       proposalId: proposal.id,
       token: proposal.confirmToken,
+      tenantId: "t",
       threadId: "th",
       principal: "p",
     });
@@ -148,6 +153,8 @@ describe("T5.3 动作确认三段分离", () => {
         principal: "p",
         turnIndex: 1,
         confirmToken: token,
+        confirmationProposalId: proposal.id,
+        verifyConfirmation: service.verifyConfirmation.bind(service),
         idempotency: new InMemoryIdempotencyStore(),
         audit: () => {},
       }).then((value) => value.result),
@@ -173,6 +180,7 @@ describe("T5.3 动作确认三段分离", () => {
     const failConfirmed = service.confirm({
       proposalId: failProposal.id,
       token: failProposal.confirmToken,
+      tenantId: "t",
       threadId: "th-fail",
       principal: "p",
     });

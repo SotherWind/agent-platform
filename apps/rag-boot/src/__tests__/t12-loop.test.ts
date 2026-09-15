@@ -105,7 +105,7 @@ describe("编排循环", () => {
     });
 
     const result = await graph.invoke(
-      { query: "我的订单到哪了", tenantId: "tenant-a", threadId: "t12-loop", messages: [] },
+      { query: "我的订单到哪了", tenantId: "tenant-a", principal: "p", threadId: "t12-loop", messages: [] },
       { configurable: { thread_id: "t12-loop" } },
     );
 
@@ -148,7 +148,7 @@ describe("编排循环", () => {
     });
 
     const result = await graph.invoke(
-      { query: "我的订单到哪了", tenantId: "tenant-a", threadId: "t12-spin", messages: [] },
+      { query: "我的订单到哪了", tenantId: "tenant-a", principal: "p", threadId: "t12-spin", messages: [] },
       { configurable: { thread_id: "t12-spin" } },
     );
 

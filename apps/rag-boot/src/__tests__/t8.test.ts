@@ -157,6 +157,10 @@ describe("T8.3 知识库生命周期", () => {
     expect(isKnowledgeDocumentActive({ effectiveAt: 90, expiredAt: 110 }, 100)).toBe(true);
     expect(isKnowledgeDocumentActive({ effectiveAt: 101 }, 100)).toBe(false);
     expect(isKnowledgeDocumentActive({ expiredAt: 100 }, 100)).toBe(false);
-    expect(knowledgeFilter("tenant-a", 100).must_not).toHaveLength(2);
+    expect(knowledgeFilter("tenant-a", 100).must_not).toEqual(expect.arrayContaining([
+      { key: "metadata.published", match: { value: false } },
+      { key: "metadata.effectiveAt", range: { gt: 100 } },
+      { key: "metadata.expiredAt", range: { lte: 100 } },
+    ]));
   });
 });

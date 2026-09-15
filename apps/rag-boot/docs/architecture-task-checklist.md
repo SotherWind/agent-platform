@@ -8,6 +8,68 @@
 >
 > 生成日期：2026-09-03
 
+## 2026-09-05 架构复核与加固
+
+原清单的“已完成”表示曾通过相应功能测试，不等同于生产上线验收。本次按入口、执行、恢复和数据边界复核后，补齐以下实现：
+
+| 边界 | 本次落地 |
+| --- | --- |
+| 可信身份 | `AccessGateway` 签发不可由请求 JSON 伪造的上下文；租户、主体、线程及知识授权均取凭证。旧 checkpoint 再校验归属，权限变化需新建线程 |
+| 模型工具参数 | 移除租户/主体/线程/确认令牌字段，由执行上下文注入；确认回调直接走确定性节点，不再调用模型 |
+| 确认授权 | HMAC-SHA256 绑定动作、参数、租户、主体、线程与有效期；重新读取权威 proposal，不信任调用方修改的状态 |
+| 入口与工具幂等 | `processing/completed/failed` 租约、续租、结果缓存和旧 worker 提交隔离；同线程串行；已完成 checkpoint 可补回入口结果 |
+| 动作状态 | proposal 入队后为 `queued`，真实后端完成后才为 `executed`；signal 有 `processing/acked/failed`，恢复漏写 outbox 和过期租约 |
+| 生产持久化 | server 统一装配 SQLite checkpoint、入口/工具幂等、会话绑定、工单、proposal、signal、知识发布记录；生产拒绝默认密钥、假模型和未配置业务适配器 |
+| 检索授权 | 产品、区域、角色、权限从凭证贯穿到 Qdrant filter；权限需全部满足；检索结果进入 reranker/模型前再过滤 |
+| 知识发布 | 完整写入不可见 generation 后，原子切换发布记录，再清理旧版本；并发发布使用 revision 校验；维度冲突不再自动删库 |
+| 交接隐私 | transcript、账户字段、JSON 工具摘要、引用、原因均按坐席权限脱敏；确认令牌/密码等秘密不进入交接与审计 |
+| 输出策略 | `stream()` 与默认 `streamTokens()` 均先审后发；生产仅允许 strict；完成的消息重试重放原结果，不返回空流 |
+| CI 门禁 | 增加 server 与 workspace 配置的触发范围，运行服务端类型及 HTTP/灌库契约测试；安全测试结果通过步骤 `env` 传入评测门禁 |
+
+回归入口：`architecture-security.test.ts`、`knowledge-scope.test.ts`、`handoff-privacy.test.ts`、`t83-knowledge.test.ts`、`integration/architecture-recovery.test.ts` 及 server 的 `architecture.test.ts`。SQLite 恢复新增用例不允许因原生模块不可用而跳过，包含真实跨进程租约竞争。
+
+**本地验证记录（2026-09-05）**：
+
+- 核心单元测试：45 个文件、232 条通过。
+- SQLite 集成测试：3 个文件、12 条通过，无跳过。
+- 安全专项：52 条通过，无跳过；这是核心测试的专项复跑，不重复计入总数。
+- 服务端契约测试：4 个文件、40 条通过；其中 10 条覆盖共享知识读写实例、默认 collection、首次灌库及故障不触发灌库。
+- 核心与服务端 `tsc --noEmit` 均通过；`git diff --check` 通过。
+- 实际安全测试通过后，以 `SECURITY_TESTS_PASSED=true` 运行 `eval:gate` 通过，12/12 fixture 符合预期。远端 CI workflow 尚未触发，真实 LLM/CRM/Qdrant 联调未执行。
+
+**开发环境实机验收记录（2026-09-05）**：
+
+- Qdrant `http://127.0.0.1:6333/healthz` 返回 `healthz check passed`；服务实际连接 `rag_bot` collection，状态 `green`、43 个点、向量维度 1024。
+- 独立端口 `8788` 使用真实模型、真实 Qdrant 与 `server/rag-bot/data/ragbot.sqlite` 启动成功；启动日志确认 Qdrant 已连接、自动灌库检测到已有数据并跳过重复灌库。
+- HTTP 冒烟 8/8 通过：探活、登录、未认证拦截、知识问答并返回 5 条引用、转人工建单、工单列表、评分回流、非法评分拦截。
+- 服务停止后使用同一 SQLite 目录重启，重新登录后仍能读到验收工单；数据库 `integrity_check=ok`。数据库中实际保存 20 个 checkpoint、148 条 writes、1 张工单。
+- 用随机临时 collection 验证真实知识发布：Qdrant 写入 1 个向量，SQLite publication manifest 可恢复读取，删除发布后检索结果为 0；临时 collection 与 manifest 已清理。
+- 当前 `rag_bot` 中已有 43 个 legacy 向量没有 `publicationId`，按兼容策略作为旧知识可见；新发布知识必须通过共享 publication store 写入和读取。`rag_boot` 当前为空，服务端实际使用的 collection 由 `server/rag-bot/.env` 中的 `QDRANT_COLLECTION_NAME=rag_bot` 决定。
+
+**本地 CRM/订单模拟验收记录（2026-09-05）**：
+
+- 新增 `server/rag-bot/src/crm.ts` 的 `LocalCrmAdapter`，开发默认与其他模块共用
+  `RAGBOT_DATA_DIR/ragbot.sqlite`，生产配置自定义 `RAGBOT_BUSINESS_MODULE` 时不创建演示 CRM。
+- CRM 表覆盖账户、订单、集成、凭证、退款、套餐变更、服务故障和业务操作幂等账本。
+  订单使用 `(tenant_id, order_id)` 复合主键，适配器所有查询/写入都按 `tenantId` 过滤。
+- 退款、套餐变更、凭证重置均在 SQLite 事务中以 `operationKey` 去重；退款同时更新订单状态和可退余额。
+ 这补上了“CRM 已成功但 signal 回执丢失后再次投递”的业务侧幂等窗口。
+- server CRM 用例 5 条通过：跨租户拒绝、同编号不同租户隔离、超额退款拒绝、重复退款只生成一条、
+ 变更状态跨实例恢复，以及确认前无副作用/确认后 signal 投递/重复 flush 不重复退款。
+- 独立端口 `8789` 使用真实 Qdrant、SQLite 本地 CRM 和演示模型完成 HTTP 提议/确认；确认前退款 0 条，
+ 之后订单由 `shipped` 变为 `partially_refunded`，可退余额 `29900 → 20000`，退款表 1 条，
+ 业务 signal 为 `acked`。停止进程并用同一 SQLite 重启后，重复确认返回“已处理完成”，记录仍为 1 条。
+
+**尚不代表完成的上线条件**：
+
+- 当前 `LocalCrmAdapter` 只是本地持久化模拟器；真实 CRM/订单/支付适配器仍必须按主体校验对象归属，
+  在业务事务中持久化 `operationKey`，并完成真实支付/订单系统回执联调。应用租约本身不能保证跨系统副作用恰好一次。
+- 真实渠道验签、附件 SSRF 与恶意文件扫描、集中审计与留存作业、跨主机高可用/分布式限流仍需单独交付。
+- 当前生产装配面向单机持久卷及同机多进程。Qdrant 与 SQLite 发布记录需要成套备份，所有知识读写程序共享同一发布记录。
+- 12 条 fixture 的解决率仍为 0.5，满意度无数据。不能把 fixture 全通过写成生产质量达标；仍需真实工单回放和人工基线。
+
+部署配置与迁移注意事项见 `server/rag-bot/README.md`。本文后续各阶段保留原始验收记录，旧实现描述与本节冲突时以本节和当前代码为准。
+
 ## 如何使用本清单
 
 - 任务按依赖顺序编号，`P0 → P9` 为阶段，阶段内任务可并行的会标注。P9（渠道与接入层）架构上在最上游，实现上可后置，唯 T9.2 例外。
@@ -1075,4 +1137,3 @@ P0.1 ─┬─ P0.2
 | 知识库更新（审核+版本化+过期）、离线评测 | T8.3、T7.1 |
 
 未在本清单展开的验证文档条目：多智能体拆分时机。依据 Diffco 的结论「架构变成多智能体是挣来的，不是选来的」，本清单把 P1.3/P1.4 的专家与编排器列为任务，但**建议先用单专家跑通 P0-P7，用评测集证明单 Agent 撞墙后再拆**。判断线：跨业务域强类型工具超过 20-30 个，或单一提示词无法稳定路由多意图会话（Diffco 实测约 7% 工单跨类别）。
-

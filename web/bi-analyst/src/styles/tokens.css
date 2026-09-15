@@ -1,0 +1,42 @@
+:root {
+  --bg: oklch(1 0 0);
+  --surface: oklch(0.965 0 0);
+  --ink: oklch(0.22 0.025 10);
+  --muted: oklch(0.42 0.018 10);
+  --line: oklch(0.9 0.005 255);
+  --primary: oklch(0.48 0.175 10);
+  --primary-ink: oklch(0.99 0.002 10);
+  --accent: oklch(0.62 0.14 150);
+  --rail: oklch(0.16 0.028 255);
+  --rail-ink: oklch(0.96 0.01 255);
+  --rail-muted: oklch(0.72 0.02 255);
+  --rail-line: oklch(0.28 0.03 255);
+  --rail-hover: oklch(0.22 0.03 255);
+  --rail-active: oklch(0.26 0.032 255);
+  --danger: oklch(0.5 0.18 25);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --header-h: 56px;
+  --rail-w: 248px;
+  --composer-pad: 20px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --z-dropdown: 20;
+  --z-sticky: 30;
+  --font: "IBM Plex Sans", "Noto Sans SC", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

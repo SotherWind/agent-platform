@@ -80,7 +80,7 @@ describe("成本预算", () => {
     });
 
     const result = await graph.invoke(
-      { query: "订单到哪了", tenantId: "t", threadId: "t63-turns", messages: [] },
+      { query: "订单到哪了", tenantId: "t", principal: "p", threadId: "t63-turns", messages: [] },
       { configurable: { thread_id: "t63-turns" } },
     );
 

@@ -22,9 +22,9 @@ export interface Backend {
   getIntegrationStatus(accountId: string, tenantId: string): Promise<{ connected: boolean; lastSyncAt: number | null }>;
   getAccountProfile(accountId: string, tenantId: string): Promise<{ plan: string; seats: number }>;
   getServiceStatus(tenantId: string): Promise<{ healthy: boolean; incidents: string[] }>;
-  refund(orderId: string, amountCents: number, tenantId: string): Promise<{ refundId: string }>;
-  changePlan(accountId: string, plan: string, tenantId: string): Promise<{ effectiveAt: number }>;
-  resetCredential(integrationId: string, tenantId: string): Promise<{ rotatedAt: number }>;
+  refund(orderId: string, amountCents: number, tenantId: string, idempotencyKey: string): Promise<{ refundId: string }>;
+  changePlan(accountId: string, plan: string, tenantId: string, idempotencyKey: string): Promise<{ effectiveAt: number }>;
+  resetCredential(integrationId: string, tenantId: string, idempotencyKey: string): Promise<{ rotatedAt: number }>;
 }
 
 /** 内存 fake backend：单测注入用，所有副作用可计数 */
@@ -33,6 +33,7 @@ export class FakeBackend implements Backend {
   refunds: Array<{ orderId: string; amountCents: number; tenantId: string }> = [];
   tickets: Array<Record<string, unknown>> = [];
   private clock: () => number;
+  private readonly writeResults = new Map<string, any>();
 
   constructor(options: { clock?: () => number } = {}) {
     this.clock = options.clock ?? Date.now;
@@ -62,23 +63,34 @@ export class FakeBackend implements Backend {
     this.record("getServiceStatus", [tenantId]);
     return { healthy: true, incidents: [] };
   }
-  async refund(orderId: string, amountCents: number, tenantId: string) {
+  async refund(orderId: string, amountCents: number, tenantId: string, idempotencyKey: string) {
+    const key = JSON.stringify([tenantId, "refund", idempotencyKey]);
+    if (this.writeResults.has(key)) return this.writeResults.get(key) as { refundId: string };
     this.record("refund", [orderId, amountCents, tenantId]);
     this.refunds.push({ orderId, amountCents, tenantId });
-    return { refundId: `rf-${orderId}-${this.refunds.length}` };
+    const result = { refundId: `rf-${orderId}-${this.refunds.length}` };
+    this.writeResults.set(key, result);
+    return result;
   }
-  async changePlan(accountId: string, plan: string, tenantId: string) {
+  async changePlan(accountId: string, plan: string, tenantId: string, idempotencyKey: string) {
+    const key = JSON.stringify([tenantId, "plan", idempotencyKey]);
+    if (this.writeResults.has(key)) return this.writeResults.get(key) as { effectiveAt: number };
     this.record("changePlan", [accountId, plan, tenantId]);
-    return { effectiveAt: this.clock() };
+    const result = { effectiveAt: this.clock() };
+    this.writeResults.set(key, result);
+    return result;
   }
-  async resetCredential(integrationId: string, tenantId: string) {
+  async resetCredential(integrationId: string, tenantId: string, idempotencyKey: string) {
+    const key = JSON.stringify([tenantId, "credential", idempotencyKey]);
+    if (this.writeResults.has(key)) return this.writeResults.get(key) as { rotatedAt: number };
     this.record("resetCredential", [integrationId, tenantId]);
-    return { rotatedAt: this.clock() };
+    const result = { rotatedAt: this.clock() };
+    this.writeResults.set(key, result);
+    return result;
   }
 }
 
 const TenantAccount = z.object({
-  tenantId: z.string().min(1),
   accountId: z.string().min(1),
 });
 
@@ -99,9 +111,9 @@ export function createOrderStatusTool(backend: Backend): AgentTool<any, any> {
     domains: ["order"],
     idempotent: true,
     credential: Credentials.read,
-    schema: z.object({ orderId: z.string().min(1), tenantId: z.string().min(1) }),
-    async execute(input) {
-      return backend.getOrderStatus(input.orderId, input.tenantId);
+    schema: z.object({ orderId: z.string().min(1) }),
+    async execute(input, ctx) {
+      return backend.getOrderStatus(input.orderId, ctx.tenantId);
     },
   };
 }
@@ -115,8 +127,8 @@ export function createBillingSummaryTool(backend: Backend): AgentTool<any, any> 
     idempotent: true,
     credential: Credentials.read,
     schema: TenantAccount,
-    async execute(input) {
-      return backend.getBillingSummary(input.accountId, input.tenantId);
+    async execute(input, ctx) {
+      return backend.getBillingSummary(input.accountId, ctx.tenantId);
     },
   };
 }
@@ -130,8 +142,8 @@ export function createIntegrationStatusTool(backend: Backend): AgentTool<any, an
     idempotent: true,
     credential: Credentials.read,
     schema: TenantAccount,
-    async execute(input) {
-      return backend.getIntegrationStatus(input.accountId, input.tenantId);
+    async execute(input, ctx) {
+      return backend.getIntegrationStatus(input.accountId, ctx.tenantId);
     },
   };
 }
@@ -145,8 +157,8 @@ export function createAccountProfileTool(backend: Backend): AgentTool<any, any> 
     idempotent: true,
     credential: Credentials.read,
     schema: TenantAccount,
-    async execute(input) {
-      return backend.getAccountProfile(input.accountId, input.tenantId);
+    async execute(input, ctx) {
+      return backend.getAccountProfile(input.accountId, ctx.tenantId);
     },
   };
 }
@@ -159,9 +171,9 @@ export function createServiceStatusTool(backend: Backend): AgentTool<any, any> {
     domains: ["technical"],
     idempotent: true,
     credential: Credentials.read,
-    schema: z.object({ tenantId: z.string().min(1) }),
-    async execute(input) {
-      return backend.getServiceStatus(input.tenantId);
+    schema: z.object({}),
+    async execute(_input, ctx) {
+      return backend.getServiceStatus(ctx.tenantId);
     },
   };
 }
@@ -182,10 +194,9 @@ export function createRefundTool(backend: Backend): AgentTool<any, any> {
     schema: z.object({
       orderId: z.string().min(1),
       amountCents: z.number().int().positive(),
-      tenantId: z.string().min(1),
     }),
-    async execute(input) {
-      return backend.refund(input.orderId, input.amountCents, input.tenantId);
+    async execute(input, ctx) {
+      return backend.refund(input.orderId, input.amountCents, ctx.tenantId, ctx.operationKey!);
     },
   };
 }
@@ -202,10 +213,9 @@ export function createPlanChangeTool(backend: Backend): AgentTool<any, any> {
     schema: z.object({
       accountId: z.string().min(1),
       plan: z.string().min(1),
-      tenantId: z.string().min(1),
     }),
-    async execute(input) {
-      return backend.changePlan(input.accountId, input.plan, input.tenantId);
+    async execute(input, ctx) {
+      return backend.changePlan(input.accountId, input.plan, ctx.tenantId, ctx.operationKey!);
     },
   };
 }
@@ -221,10 +231,9 @@ export function createCredentialResetTool(backend: Backend): AgentTool<any, any>
     credential: Credentials.write,
     schema: z.object({
       integrationId: z.string().min(1),
-      tenantId: z.string().min(1),
     }),
-    async execute(input) {
-      return backend.resetCredential(input.integrationId, input.tenantId);
+    async execute(input, ctx) {
+      return backend.resetCredential(input.integrationId, ctx.tenantId, ctx.operationKey!);
     },
   };
 }
@@ -254,24 +263,20 @@ export function createTicketTool(
     idempotent: true,
     credential: Credentials.write,
     schema: z.object({
-      tenantId: z.string().min(1),
-      threadId: z.string().min(1),
       category: z.string().default("general"),
       subject: z.string().default(""),
       handoff: z.record(z.string(), z.unknown()).nullable().default(null),
     }),
     async execute(input, ctx) {
       const ticket = await create({
-        tenantId: input.tenantId,
-        threadId: input.threadId,
+        tenantId: ctx.tenantId,
+        threadId: ctx.threadId,
         category: input.category,
         subject: input.subject,
         handoff: input.handoff ?? undefined,
         humanInvolved: true,
         // 幂等键把「同会话同主题」收敛成一张单
-        idempotencyKey: ctx.confirmToken
-          ? `ticket:${ctx.threadId}:${input.category}`
-          : `ticket:${ctx.threadId}:${input.category}:${Date.now()}`,
+        idempotencyKey: ctx.operationKey,
       });
       return { ticketId: ticket.id };
     },

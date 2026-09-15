@@ -20,6 +20,9 @@ const reportPath = join(root, "security-report.json");
 
 /** 清单点名的安全域：租户隔离 / 动作确认 / Guardrails（T4.1-T4.3），外加跨切面基线 */
 const SECURITY_FILES = [
+  "src/__tests__/architecture-security.test.ts",
+  "src/__tests__/knowledge-scope.test.ts",
+  "src/__tests__/handoff-privacy.test.ts",
   "src/__tests__/security.test.ts",
   "src/__tests__/t23-tenant-isolation.test.ts",
   "src/__tests__/t41-input-guardrails.test.ts",

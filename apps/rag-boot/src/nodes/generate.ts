@@ -14,6 +14,7 @@ import type { RerankedChunk, AnswerCitation, SpecialistOutput } from "../schema"
 import { GENERATE_PROMPT, LOW_CONFIDENCE_NOTE, renderPrompt } from "../prompts";
 import { LlmTimeoutError, TenantMissingError } from "../errors";
 import { withConfidenceTone } from "./confidence";
+import { countTokens } from "../tokens";
 import type { Llm, LlmResponse } from "../llm/types";
 
 export const EMPTY_RETRIEVAL_FALLBACK =
@@ -73,7 +74,16 @@ export function buildContextBlock(chunks: RerankedChunk[]): string {
  */
 export async function generate(
   input: GenerateInput,
-  options: { llm?: Llm; onUsage?: (response: LlmResponse) => void } = {},
+  options: {
+    llm?: Llm;
+    onUsage?: (response: LlmResponse) => void;
+    /**
+     * 流式支持（T9.5）：提供时且 LLM 支持 stream() 则走流式生成，
+     * 每个 token 增量通过 streamWriter 回调外发（LangGraph custom stream）。
+     * 不提供或 LLM 不支持时保持原 invoke 路径，行为与用量统计完全不变。
+     */
+    streamWriter?: (delta: string) => void;
+  } = {},
 ): Promise<GenerateResult> {
   if (!input.tenantId) {
     throw new TenantMissingError("tenantId is required before generation.");
@@ -153,13 +163,54 @@ export async function generate(
 
   parts.push(`【要求】基于以上上下文与结论，产出给用户的最终回复。只输出回复正文。`);
 
+  const promptText = parts.join("\n\n");
+  const llmRequest = {
+    system,
+    prompt: promptText,
+    stage: "generate" as const,
+  };
   let res: LlmResponse;
   try {
-    res = await options.llm.invoke({
-      system,
-      prompt: parts.join("\n\n"),
-      stage: "generate",
-    });
+    if (options.streamWriter && typeof options.llm.stream === "function") {
+      // T9.5 流式路径：边生成边外发增量；用量按最终文本精算（countTokens）。
+      let full = "";
+      let streamFailed: unknown = null;
+      try {
+        for await (const delta of await options.llm.stream(llmRequest)) {
+          if (!delta) continue;
+          full += delta;
+          options.streamWriter(delta);
+        }
+      } catch (err) {
+        streamFailed = err;
+      }
+
+      if (full.length > 0) {
+        // 已有部分内容流出：无法原地重试（前缀已发出），如实上抛走对账/兜底
+        if (streamFailed) {
+          throw new LlmTimeoutError(
+            `generate stream failed after partial output: ${streamFailed instanceof Error ? streamFailed.message : String(streamFailed)}`,
+            { stage: "generate", cause: streamFailed },
+          );
+        }
+        const promptTokens = countTokens(promptText);
+        const completionTokens = countTokens(full);
+        res = {
+          text: full,
+          model: options.llm.model,
+          tier: options.llm.tier,
+          promptTokens,
+          completionTokens,
+          totalTokens: promptTokens + completionTokens,
+        };
+      } else {
+        // 流式启动失败且尚无内容流出（常见：端点超时）→ 回落全量 invoke。
+        // T6.1 语义：绝不因流式失败而丢回复。
+        res = await options.llm.invoke(llmRequest);
+      }
+    } else {
+      res = await options.llm.invoke(llmRequest);
+    }
   } catch (err) {
     // 归一化：调用方（T6.1 降级链）只依赖 AgentError.retryable 决策
     if (err instanceof LlmTimeoutError) throw err;

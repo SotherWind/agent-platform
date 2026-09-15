@@ -112,7 +112,7 @@ describe("动态数据强制取数", () => {
     });
 
     const result = await graph.invoke(
-      { query: "我的订单到哪了", tenantId: "t", threadId: "t33-retry", messages: [] },
+      { query: "我的订单到哪了", tenantId: "t", principal: "p", threadId: "t33-retry", messages: [] },
       { configurable: { thread_id: "t33-retry" } },
     );
 
@@ -184,7 +184,7 @@ describe("动态数据强制取数", () => {
     const config = { configurable: { thread_id: "t33-stale" } };
 
     const first = await graph.invoke(
-      { query: "我的订单到哪了", tenantId: "t", threadId: "t33-stale", messages: [] },
+      { query: "我的订单到哪了", tenantId: "t", principal: "p", threadId: "t33-stale", messages: [] },
       config,
     );
     expect(backend.calls).toHaveLength(1);
@@ -193,7 +193,7 @@ describe("动态数据强制取数", () => {
     // 第二轮：turnStart 重置 toolsCalledThisTurn；上一轮 toolCalls 虽还在 state 里，
     // 但 turnIndex 不再等于本轮 turnCount → currentTurnToolCalls 为空 → 拦截
     const second = await graph.invoke(
-      { query: "现在呢？再帮我查一次订单", tenantId: "t", threadId: "t33-stale", messages: [] },
+      { query: "现在呢？再帮我查一次订单", tenantId: "t", principal: "p", threadId: "t33-stale", messages: [] },
       config,
     );
 

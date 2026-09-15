@@ -1,0 +1,18 @@
+.ask-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: end;
+  padding: var(--composer-pad) var(--space-6) var(--space-5);
+  background: var(--bg);
+}
+
+.ask-composer .ant-input {
+  border-radius: var(--radius-lg);
+}
+
+.ask-composer .ant-btn-primary {
+  height: 40px;
+  padding-inline: 18px;
+  color: var(--primary-ink);
+}

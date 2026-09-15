@@ -10,6 +10,8 @@
  */
 import { z } from "zod/v4";
 import { GuardrailBlockedError, ToolExecutionError } from "../errors";
+import { createHash } from "node:crypto";
+import type { IdempotencyTicket } from "./idempotency";
 
 export type ToolKind = "read" | "write";
 
@@ -29,18 +31,27 @@ export interface ToolContext {
   turnIndex: number;
   /** 幂等存储（T3.2） */
   idempotency: {
-    begin<T>(key: string): Promise<{
-      hit: boolean;
-      result?: T;
-      commit(result: T): Promise<void>;
-      rollback?(): Promise<void>;
-    }>;
+    begin<T>(key: string): Promise<IdempotencyTicket<T>>;
   };
   /** 审计日志（T4.2 / T8.2） */
   audit: (entry: AuditEntry) => void;
   /** write 类工具必须携带的有效确认令牌，否则拒绝执行 */
   confirmToken?: string;
+  confirmationProposalId?: string;
+  verifyConfirmation?: (request: ConfirmationCheck) => { idempotencyKey: string } | null;
+  /** Stable downstream operation identity; business backends must honor it for writes. */
+  operationKey?: string;
   clock?: () => number;
+}
+
+export interface ConfirmationCheck {
+  proposalId: string;
+  token: string;
+  toolName: string;
+  args: unknown;
+  tenantId: string;
+  threadId: string;
+  principal: string;
 }
 
 export interface AuditEntry {
@@ -130,6 +141,21 @@ export interface ExecutionResult<O> {
   reasonCode?: string;
 }
 
+export function parseToolInput(tool: AgentTool<any, any>, rawInput: unknown): unknown {
+  // Identity fields are never model-controlled, including for custom schemas.
+  const input = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)
+    ? Object.fromEntries(Object.entries(rawInput).filter(([key]) =>
+        !["tenantId", "principal", "threadId", "confirmToken", "authContext"].includes(key)))
+    : rawInput;
+  const parsed = tool.schema.safeParse(input);
+  if (!parsed.success) {
+    throw new ToolExecutionError(`tool "${tool.name}" invalid input: ${parsed.error.message}`, {
+      stage: "tools", retryable: false,
+    });
+  }
+  return parsed.data;
+}
+
 /**
  * 工具执行入口：所有调用都必须经过这里。
  *
@@ -144,25 +170,34 @@ export async function executeTool<I, O>(
   rawInput: unknown,
   ctx: ToolContext,
 ): Promise<ExecutionResult<O>> {
-  const parsed = tool.schema.safeParse(rawInput);
-  if (!parsed.success) {
-    throw new ToolExecutionError(
-      `tool "${tool.name}" invalid input: ${parsed.error.message}`,
-      { stage: "tools", retryable: false },
-    );
+  assertToolContract(tool);
+  if (!ctx.tenantId?.trim() || !ctx.principal?.trim() || !ctx.threadId?.trim()) {
+    throw new GuardrailBlockedError("Tool execution requires a complete session identity.", {
+      stage: "tools", reasonCode: "missing_principal",
+    });
   }
+  const parsed = parseToolInput(tool, rawInput);
 
-  const idempotencyKey = toolIdempotencyKey({
+  let idempotencyKey = toolIdempotencyKey({
+    tenantId: ctx.tenantId,
+    principal: ctx.principal,
     threadId: ctx.threadId,
     toolName: tool.name,
-    args: parsed.data,
+    args: parsed,
     turnIndex: ctx.turnIndex,
   });
 
   const now = ctx.clock ?? Date.now;
 
   // 写工具必须持有确认令牌（T5.3 的代码级保证：不存在「LLM 输出直接触发写操作」的路径）
-  if (tool.kind === "write" && !ctx.confirmToken) {
+  const confirmation = tool.kind === "write" && ctx.confirmToken && ctx.confirmationProposalId
+    ? ctx.verifyConfirmation?.({
+        proposalId: ctx.confirmationProposalId, token: ctx.confirmToken,
+        toolName: tool.name, args: parsed,
+        tenantId: ctx.tenantId, threadId: ctx.threadId, principal: ctx.principal,
+      })
+    : null;
+  if (tool.kind === "write" && !confirmation) {
     ctx.audit({
       at: now(),
       tenantId: ctx.tenantId,
@@ -180,6 +215,7 @@ export async function executeTool<I, O>(
       { stage: "tools", reasonCode: "confirmation_required" },
     );
   }
+  if (confirmation) idempotencyKey = confirmation.idempotencyKey;
 
   // 幂等：重发命中缓存，副作用只发生一次（T3.2）
   const ticket = await ctx.idempotency.begin<O>(idempotencyKey);
@@ -197,8 +233,16 @@ export async function executeTool<I, O>(
     return { ok: true, result: ticket.result, deduped: true, idempotencyKey };
   }
 
+  let leaseError: unknown;
+  const heartbeat = ticket.renew
+    ? setInterval(() => {
+        void ticket.renew!().catch((error) => { leaseError = error; });
+      }, Math.max(1, Math.floor((ticket.leaseMs ?? 60_000) / 3)))
+    : undefined;
+  heartbeat?.unref();
   try {
-    const result = await tool.execute(parsed.data as I, ctx);
+    const result = await tool.execute(parsed as I, { ...ctx, operationKey: idempotencyKey });
+    if (leaseError) throw leaseError;
     await ticket.commit(result);
     ctx.audit({
       at: now(),
@@ -234,6 +278,8 @@ export async function executeTool<I, O>(
       detail: error.message,
     });
     throw error;
+  } finally {
+    if (heartbeat) clearInterval(heartbeat);
   }
 }
 
@@ -243,16 +289,17 @@ export async function executeTool<I, O>(
  * 归一化：对象 key 排序后稳定序列化，避免 {"a":1,"b":2} 与 {"b":2,"a":1} 算成两个 key。
  */
 export function toolIdempotencyKey(parts: {
+  tenantId?: string;
+  principal?: string;
   threadId: string;
   toolName: string;
   args: unknown;
   turnIndex: number;
 }): string {
-  return hashString(
-    [parts.threadId, parts.toolName, stableStringify(parts.args), String(parts.turnIndex)].join(
-      "|",
-    ),
-  );
+  return createHash("sha256").update(stableStringify([
+    parts.tenantId ?? "", parts.principal ?? "", parts.threadId,
+    parts.toolName, parts.args, parts.turnIndex,
+  ])).digest("hex");
 }
 
 /** 稳定序列化：对象键递归排序 */

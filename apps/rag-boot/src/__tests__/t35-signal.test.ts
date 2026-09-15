@@ -141,7 +141,7 @@ describe("action signal 集成", () => {
     const signals = await bus.list();
     expect(signals).toHaveLength(1);
     expect(signals[0].idempotencyKey).toBe(proposal.idempotencyKey);
-    expect(second.actionProposals[0].status).toBe("executed");
+    expect(second.actionProposals[0].status).toBe("queued");
     // 解耦的关键断言：图执行完，CRM 后端的退款表里一条都没有
     expect(backend.refunds).toHaveLength(0);
     expect(backend.calls.filter((call) => call.method === "refund")).toHaveLength(0);
@@ -158,8 +158,9 @@ describe("action signal 集成", () => {
     expect(signal.decisionBasis).toEqual(["chunk-1", "chunk-2"]);
 
     // 幂等：同 key 重复 emit 返回同一条信号，不产生第二条
-    const again = await bus.emit(emitInput({ payload: { orderId: "o-2" } }));
+    const again = await bus.emit(emitInput());
     expect(again.id).toBe(signal.id);
+    await expect(bus.emit(emitInput({ payload: { orderId: "o-2" } }))).rejects.toThrow("conflicts");
     expect(await bus.list()).toHaveLength(1);
 
     // 不同 key 是另一条信号

@@ -40,6 +40,19 @@ export class TenantMissingError extends AgentError {
   }
 }
 
+/** 受信身份上下文缺失或与会话绑定不一致：fail-closed */
+export class AuthenticationContextError extends TenantMissingError {
+  readonly reasonCode: string;
+
+  constructor(
+    message = "A trusted authentication context is required.",
+    options: AgentErrorOptions & { reasonCode?: string } = {},
+  ) {
+    super(message, { ...options, stage: options.stage ?? "access" });
+    this.reasonCode = options.reasonCode ?? "authentication_context_invalid";
+  }
+}
+
 /** Guardrails 拦截：输入/动作/输出三点命中后的统一错误 */
 export class GuardrailBlockedError extends AgentError {
   /** 拦截原因码，供审计日志（T4.2）使用 */

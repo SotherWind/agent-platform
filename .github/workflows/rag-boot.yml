@@ -4,12 +4,16 @@ on:
   push:
     paths:
       - "apps/rag-boot/**"
+      - "server/rag-bot/**"
       - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - ".github/workflows/rag-boot.yml"
   pull_request:
     paths:
       - "apps/rag-boot/**"
+      - "server/rag-bot/**"
       - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - ".github/workflows/rag-boot.yml"
 
 concurrency:
@@ -42,6 +46,12 @@ jobs:
         run: pnpm test:unit
       - name: Integration (SQLite checkpointer & retention)
         run: pnpm test:integration
+      - name: Server typecheck
+        working-directory: server/rag-bot
+        run: pnpm typecheck
+      - name: Server contracts
+        working-directory: server/rag-bot
+        run: pnpm exec vitest run --pool=threads --no-file-parallelism --maxWorkers=1
       # 安全类测试与质量门禁的对应关系（quality-gate.config.json 的 securityTests.required）：
       #   tenant-isolation      → security.test.ts
       #   action-confirmation   → t53-proposal.test.ts / pipeline-actions（在 unit 全集内）
@@ -53,8 +63,6 @@ jobs:
         continue-on-error: true
         run: pnpm test:security
       - name: Evaluation quality gate
-        run: |
-          if [ "${{ steps.security.outcome }}" = "success" ]; then
-            echo "SECURITY_TESTS_PASSED=true" >> "$GITHUB_ENV"
-          fi
-          pnpm eval:gate
+        env:
+          SECURITY_TESTS_PASSED: ${{ steps.security.outcome == 'success' }}
+        run: pnpm eval:gate

@@ -1,0 +1,125 @@
+.ask-rail {
+  display: flex;
+  flex-direction: column;
+  width: var(--rail-w);
+  min-width: var(--rail-w);
+  height: 100%;
+  color: var(--rail-ink);
+  background: var(--rail);
+  padding: var(--space-5) var(--space-4);
+}
+
+.ask-rail__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+
+.ask-rail__mark {
+  width: 12px;
+  height: 12px;
+  background: var(--primary);
+}
+
+.ask-rail__name {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.ask-rail__section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ask-rail__label {
+  margin: 0 0 var(--space-3);
+  color: var(--rail-muted);
+  font-size: 13px;
+}
+
+.ask-rail__new {
+  width: 100%;
+  height: 36px;
+  margin-bottom: var(--space-4);
+  color: var(--rail-ink);
+  background: transparent;
+  border: 1px solid var(--rail-line);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.ask-rail__new:hover {
+  background: var(--rail-hover);
+}
+
+.ask-rail__new:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.ask-rail__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ask-rail__item {
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  color: var(--rail-ink);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ask-rail__item:hover {
+  background: var(--rail-hover);
+}
+
+.ask-rail__item--active {
+  background: var(--rail-active);
+}
+
+.ask-rail__footer {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--rail-line);
+}
+
+.ask-rail__health {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+
+.ask-rail__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--rail-muted);
+}
+
+.ask-rail__dot--ok {
+  background: var(--accent);
+}
+
+.ask-rail__session {
+  margin: 0;
+  color: var(--rail-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}

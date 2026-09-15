@@ -1,0 +1,23 @@
+.ask-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--header-h);
+  padding: 0 var(--space-6);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.ask-header__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.ask-header__session {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}

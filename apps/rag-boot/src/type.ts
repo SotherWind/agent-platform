@@ -13,6 +13,9 @@ import type { ProposalService } from "./actions/proposal";
 import type { TicketService } from "./tickets";
 import type { EscalationPolicyConfig } from "./escalation";
 import type { Tracer } from "./observability/tracer";
+import type { AuthenticatedContext } from "./access";
+import type { SessionBindingStore } from "./session-binding";
+import type { KnowledgePublicationStore } from "./knowledge-publication";
 export type {
   RetrievedChunk,
   RerankedChunk,
@@ -25,10 +28,19 @@ export type {
   InboundMessage,
   InboundAttachment,
 } from "./schema";
+export type { AuthenticatedContext } from "./access";
 
 export type { AgentGraphNode, State, StateUpdate } from "./state";
 
 export type KnowledgeTimestamp = number;
+
+/** Empty grants can only retrieve unrestricted knowledge. All values come from credentials. */
+export interface RetrievalScope {
+  readonly products?: readonly string[];
+  readonly regions?: readonly string[];
+  readonly roles?: readonly string[];
+  readonly permissions?: readonly string[];
+}
 
 export interface KnowledgeDocument {
   id: string;
@@ -66,7 +78,7 @@ export interface IngestOptions {
   source?: string;
   chunkSize?: number;
   chunkOverlap?: number;
-  /** true 时先删除同 documentId 的旧向量再写入，默认 true */
+  /** true 时完整写入新版本后原子切换发布记录，再清理旧向量，默认 true */
   replace?: boolean;
   /** .md 文件按 ## 标题切分（默认 true）；false 时用 RecursiveCharacterTextSplitter */
   splitBySection?: boolean;
@@ -74,6 +86,7 @@ export interface IngestOptions {
   version?: string | number;
   effectiveAt?: KnowledgeTimestamp;
   expiredAt?: KnowledgeTimestamp;
+  knowledgeScope?: RetrievalScope;
 }
 
 /** VectorStore 实现类须满足的抽象类型 */
@@ -82,6 +95,7 @@ export type VectorStoreType = {
     query: string,
     tenantId: string,
     topK: number,
+    scope?: RetrievalScope,
   ): Promise<RetrievedChunk[]>;
   addDocuments(docs: Document[], options: IngestOptions): Promise<number>;
   ingestFile(filePath: string, options: IngestOptions): Promise<number>;
@@ -94,6 +108,7 @@ export interface VectorStoreConfig {
   collectionName?: string;
   /** 知识写入 / 替换 / 删除后的审核记录接收器。 */
   onKnowledgeChange?: KnowledgeChangeAuditSink;
+  publications?: KnowledgePublicationStore;
 }
 
 export interface Reranker {
@@ -123,9 +138,12 @@ export interface RerankerConfig {
 export type CheckpointerLike = BaseCheckpointSaver;
 
 export interface BuildGraphConfig {
+  environment?: "development" | "production";
+  sessionBindings?: SessionBindingStore;
   /** 未传时默认使用 MemorySaver；生产可传 SqliteSaver。 */
   checkpointer?: CheckpointerLike;
   vectorStore?: VectorStoreType;
+  knowledgePublications?: KnowledgePublicationStore;
   /** null 表示明确关闭 rerank，并退化为向量排序；未传时也使用该安全默认。 */
   reranker?: Reranker | null;
   /** 各档 LLM（T6.2）。传数组即为该档的降级链（T6.1） */
@@ -161,6 +179,19 @@ export interface BuildGraphConfig {
   escalationPolicy?: EscalationPolicyConfig;
   /** tracing（T8.1） */
   tracer?: Tracer;
+  /**
+   * T9.5 分段预检器（chunked 流式模式下逐段调用）。
+   * 未提供时默认放行——安全兜底由全文 LLM 终审 + 对账替换承担。
+   */
+  segmentPrechecker?: import("./stream-review").SegmentPrechecker;
+  /**
+   * 专家节点策略（T9.5 首字延迟优化）：
+   * - "always"（默认）：所有查询都过专家节点（原行为）。
+   * - "skipSingleCategory"：分诊只有单一类别且不需要实时数据时，
+   *   跳过专家/编排（省一次串行 LLM 调用，约 3-8s），generate 直接基于检索上下文生成。
+   * 多类别 / 需要实时数据 / 工具循环的查询不受影响，仍走完整专家管线。
+   */
+  specialistPolicy?: "always" | "skipSingleCategory";
   clock?: () => number;
 }
 
@@ -172,14 +203,19 @@ export interface ChatMessage {
 
 export interface RagBotInput {
   query: string;
-  /** 仅保留向后兼容；生产入口必须由 AccessGateway 注入身份。 */
+  /** 兼容字段：公开图入口不会采信，身份必须来自 authContext。 */
   tenantId?: string;
   threadId?: string;
   principal?: string;
-  /** 用户确认后回传的 proposal 令牌；公开入口仍需 authenticated=true。 */
+  /** 用户确认后回传的 proposal 令牌；公开入口仍需 AccessGateway 上下文。 */
   confirmationProposalId?: string;
   confirmationToken?: string;
-  /** 已经由 AccessGateway 鉴权后的租户身份；直接调用图时缺失将 fail-closed。 */
+  /**
+   * AccessGateway 生成的受信上下文。公开 createGraph() 只接受这个对象，
+   * 不接受 authenticated 布尔值作为授权证明。
+   */
+  authContext?: AuthenticatedContext;
+  /** @deprecated 不再作为授权证明，仅保留迁移期类型兼容。 */
   authenticated?: boolean;
   /**
    * ASR 渠道的转写置信度（0-1，T9.1）。

@@ -8,7 +8,7 @@
  */
 import { z } from "zod/v4";
 import type { AnswerCitation, RerankedChunk } from "./schema";
-import { redactForClearance, redactObject, type AgentClearance } from "./observability/pii";
+import { redactForClearance, redactObjectForClearance, type AgentClearance } from "./observability/pii";
 
 export const EscalationTriggerSchema = z.enum([
   /** 用户明确要求 */
@@ -250,12 +250,16 @@ export function buildHandoffPackage(input: BuildHandoffInput): HandoffPackage {
     threadId: input.threadId,
     tenantId: input.tenantId,
     transcript,
-    accountContext: redactObject(input.accountContext ?? {}),
-    toolResults: input.toolResults ?? [],
+    accountContext: redactObjectForClearance(input.accountContext ?? {}, clearance),
+    toolResults: (input.toolResults ?? []).map((result) => ({
+      ...result, summary: redactObjectForClearance(result.summary, clearance),
+    })),
     draftReply: redactForClearance(input.draftReply, clearance),
     triggers: input.decision.triggers,
-    reasons: input.decision.reasons,
-    citations: input.citations ?? [],
+    reasons: input.decision.reasons.map((reason) => redactForClearance(reason, clearance)),
+    citations: (input.citations ?? []).map((citation) => ({
+      ...citation, text: redactForClearance(citation.text, clearance),
+    })),
     retrievedContext,
     confidence: input.confidence ?? null,
     piiRedacted: clearance !== "full",

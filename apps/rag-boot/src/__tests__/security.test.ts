@@ -51,9 +51,13 @@ describe("安全基线", () => {
     const tool = createRefundTool(backend);
     const service = new ProposalService({ secret: "test", clock: () => 1000 });
     const proposal = service.propose({ action: tool.name, params: { orderId: "o", amountCents: 10, tenantId: "t" }, summary: "退款", tenantId: "t", threadId: "th", principal: "p" });
-    expect(() => service.confirm({ proposalId: proposal.id, token: proposal.confirmToken, threadId: "other", principal: "p" })).toThrow();
-    const confirmed = service.confirm({ proposalId: proposal.id, token: proposal.confirmToken, threadId: "th", principal: "p" });
-    const result = await service.execute(confirmed, tool, async (writeTool, input, token) => executeTool(writeTool, input, { tenantId: "t", threadId: "th", principal: "p", turnIndex: 1, confirmToken: token, idempotency: new InMemoryIdempotencyStore(), audit: () => {} }).then((value) => value.result));
+    expect(() => service.confirm({ proposalId: proposal.id, token: proposal.confirmToken, tenantId: "t", threadId: "other", principal: "p" })).toThrow();
+    const confirmed = service.confirm({ proposalId: proposal.id, token: proposal.confirmToken, tenantId: "t", threadId: "th", principal: "p" });
+    const result = await service.execute(confirmed, tool, async (writeTool, input, token) => executeTool(writeTool, input, {
+      tenantId: "t", threadId: "th", principal: "p", turnIndex: 1, confirmToken: token,
+      confirmationProposalId: proposal.id, verifyConfirmation: service.verifyConfirmation.bind(service),
+      idempotency: new InMemoryIdempotencyStore(), audit: () => {},
+    }).then((value) => value.result));
     expect(result.deterministic).toBe(true);
     expect(backend.refunds).toHaveLength(1);
   });

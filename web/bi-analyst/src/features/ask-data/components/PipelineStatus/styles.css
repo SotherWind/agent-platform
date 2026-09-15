@@ -1,0 +1,31 @@
+.ask-pipe {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 0;
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.ask-pipe__step {
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+  transition: color 180ms var(--ease);
+}
+
+.ask-pipe__step--done {
+  color: var(--ink);
+}
+
+.ask-pipe__step--active {
+  color: var(--primary);
+  font-weight: 500;
+}
+
+.ask-pipe__arrow {
+  margin: 0 8px;
+  color: var(--muted);
+  font-weight: 400;
+}

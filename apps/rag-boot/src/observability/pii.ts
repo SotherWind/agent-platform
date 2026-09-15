@@ -82,12 +82,32 @@ export function detectPii(text: string, rules: PiiRule[] = DEFAULT_PII_RULES): s
 
 /** 结构化对象脱敏：键名保留（结构信息），值脱敏 */
 export function redactObject<T>(value: T, rules: PiiRule[] = DEFAULT_PII_RULES): T {
-  if (typeof value === "string") return redactText(value, rules) as unknown as T;
+  return redactObjectForClearance(value, "masked", rules);
+}
+
+export function redactObjectForClearance<T>(
+  value: T, clearance: AgentClearance, rules: PiiRule[] = DEFAULT_PII_RULES,
+): T {
+  if (typeof value === "string") {
+    // Tool summaries are often serialized JSON. Parse them to preserve structure and key-aware masking.
+    if (/^\s*[\[{]/.test(value)) {
+      try {
+        return JSON.stringify(redactObjectForClearance(JSON.parse(value), clearance, rules)) as T;
+      } catch { /* Non-JSON prose uses text redaction below. */ }
+    }
+    return redactForClearance(value, clearance, rules) as T;
+  }
   if (value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map((v) => redactObject(v, rules)) as unknown as T;
+  if (Array.isArray(value)) return value.map((v) => redactObjectForClearance(v, clearance, rules)) as T;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    out[k] = redactObject(v, rules);
+    if (/^(?:confirmToken|confirmationToken|password|secret|accessToken|authorization|credential)$/i.test(k)) {
+      out[k] = "[REDACTED]";
+    } else if (clearance !== "full" && /^(?:phone|mobile|email|address|idCard|bankCard|姓名|地址|住址|手机号)$/i.test(k) && v != null) {
+      out[k] = clearance === "none" ? "[REDACTED]" : mask(String(v), 2, 0);
+    } else {
+      out[k] = redactObjectForClearance(v, clearance, rules);
+    }
   }
   return out as T;
 }
@@ -103,7 +123,9 @@ export function redactForClearance(
   if (clearance === "full") return text;
   if (clearance === "none") {
     // 完全不可见：连类型标记都不留
-    return redactText(text, rules).replace(/\d/g, "*");
+    let result = text;
+    for (const rule of rules) result = result.replace(new RegExp(rule.pattern.source, rule.pattern.flags), "[REDACTED]");
+    return result.replace(/\d/g, "*");
   }
   return redactText(text, rules);
 }

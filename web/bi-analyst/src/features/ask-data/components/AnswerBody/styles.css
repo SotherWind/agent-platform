@@ -1,0 +1,7 @@
+.ask-answer {
+  margin: 0 0 var(--space-4);
+  max-width: 65ch;
+  line-height: 1.7;
+  text-wrap: pretty;
+  white-space: pre-wrap;
+}

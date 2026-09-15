@@ -9,6 +9,7 @@
  */
 import { MemorySaver } from "@langchain/langgraph";
 import { createGraph } from "../index";
+import { admittedInput } from "./helpers/admitted-input";
 import { createFakeLlm } from "../llm/fake";
 import type { Llm, LlmRequest, LlmResponse } from "../llm/types";
 import type { RetrievedChunk } from "../schema";
@@ -91,13 +92,13 @@ describe("T9.4 流式输出", () => {
 
     const chunks: string[] = [];
     for await (const chunk of api.stream(
-      {
+      admittedInput({
         query: "退款规则",
         tenantId: "tenant-a",
         authenticated: true,
         threadId: "t94-blocked",
         history: [],
-      },
+      }),
       { configurable: { thread_id: "t94-blocked" } },
     )) {
       chunks.push(chunk);
@@ -139,13 +140,13 @@ describe("T9.4 流式输出", () => {
     });
 
     const gen = api.stream(
-      {
+      admittedInput({
         query: "退款规则",
         tenantId: "tenant-a",
         authenticated: true,
         threadId: "t94-disconnect",
         history: [],
-      },
+      }),
       { configurable: { thread_id: "t94-disconnect" } },
     );
     const first = await gen.next(); // 客户端收到第一个 chunk

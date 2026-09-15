@@ -37,6 +37,14 @@ export const AgentState = new StateSchema({
   threadId: z.string().default("").describe("会话线程 ID，checkpointer 的键"),
   principal: z.string().default("").describe("会话身份，写操作授权的唯一来源"),
   traceId: z.string().default("").describe("全链路 traceId，关联工单与 span"),
+  operationId: z.string().default(""),
+  completedOperationId: z.string().default(""),
+  knowledgeScope: z.object({
+    products: z.array(z.string()).default(() => []),
+    regions: z.array(z.string()).default(() => []),
+    roles: z.array(z.string()).default(() => []),
+    permissions: z.array(z.string()).default(() => []),
+  }).default(() => ({ products: [], regions: [], roles: [], permissions: [] })),
   /** T5.3 用户确认入口传回的 proposal 身份。 */
   confirmationProposalId: z.string().default(""),
   confirmationToken: z.string().default(""),

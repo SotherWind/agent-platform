@@ -106,15 +106,19 @@ export class SqliteSaver extends BaseCheckpointSaver {
   // T8.2 留存清理：实现 RetentionTarget，由 RetentionRunner 按 session TTL 调用 purge
   readonly name = "checkpoint-store";
   readonly kind = "session" as const;
+  readonly durable: boolean;
 
   private readonly db: Database.Database;
   private readonly clock: () => number;
 
   constructor(options: SqliteSaverOptions = {}) {
     super();
-    this.db = new Database(options.path ?? ":memory:");
+    const path = options.path ?? ":memory:";
+    this.durable = path !== ":memory:" && path !== "";
+    this.db = new Database(path);
     this.clock = options.clock ?? Date.now;
     this.db.pragma("journal_mode = WAL");
+    this.db.pragma("busy_timeout = 5000");
     this.db.exec(SCHEMA);
     // 老库迁移：补 created_at 列。存量记录从迁移时刻起算 TTL（填 0 会导致
     // 升级后第一次清理就把全部存量 checkpoint 当过期删掉）。
@@ -328,7 +332,12 @@ export class SqliteSaver extends BaseCheckpointSaver {
     this.db
       .prepare(
         `DELETE FROM writes
-         WHERE checkpoint_id NOT IN (SELECT checkpoint_id FROM checkpoints)`,
+         WHERE NOT EXISTS (
+           SELECT 1 FROM checkpoints c
+           WHERE c.thread_id = writes.thread_id
+             AND c.checkpoint_ns = writes.checkpoint_ns
+             AND c.checkpoint_id = writes.checkpoint_id
+         )`,
       )
       .run();
     return changes;

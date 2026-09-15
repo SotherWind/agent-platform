@@ -1,103 +1,72 @@
-/**
- * 入口幂等存储。
- *
- * `first()` 必须是原子操作：并发到达同一个 messageId 时，只有一个调用返回 true。
- * AccessGateway 在限流拒绝后调用 release()，这样客户端可以在稍后重试，而不会把
- * 一次未处理成功的请求永久占成重复投递。
- */
-import Database from "better-sqlite3";
+import {
+  MemoryLeaseStore, SqliteLeaseStore,
+  type LeaseStore, type LeaseClaim,
+} from "./reliability/lease-store";
 
 export interface EntryIdempotencyStoreLike {
-  /** 首次占用返回 true；已占用返回 false。 */
+  readonly durable: boolean;
+  readonly leaseMs: number;
+  claim(messageId: string, fingerprint: string): LeaseClaim;
+  renew(messageId: string, owner: string): boolean;
+  complete(messageId: string, owner: string, result: unknown): boolean;
+  fail(messageId: string, owner: string): boolean;
+  /** @deprecated Use claim/complete/fail for recoverable processing. */
   first(messageId: string): boolean;
-  /** 释放尚未被接纳的消息占用。 */
-  release?(messageId: string): void;
 }
 
 export interface EntryIdempotencyStoreOptions {
   ttlMs?: number;
+  leaseMs?: number;
   clock?: () => number;
 }
 
 export class EntryIdempotencyStore implements EntryIdempotencyStoreLike {
-  private readonly seen = new Map<string, number>();
-  private readonly ttlMs: number;
+  readonly durable: boolean;
+  readonly leaseMs: number;
   private readonly clock: () => number;
+  private readonly ttlMs: number;
 
-  constructor(opts: EntryIdempotencyStoreOptions = {}) {
-    this.ttlMs = opts.ttlMs ?? 24 * 60 * 60 * 1000;
+  constructor(
+    opts: EntryIdempotencyStoreOptions = {},
+    protected readonly store: LeaseStore = new MemoryLeaseStore(),
+  ) {
     this.clock = opts.clock ?? Date.now;
+    this.ttlMs = opts.ttlMs ?? 24 * 60 * 60 * 1000;
+    this.leaseMs = opts.leaseMs ?? 60_000;
+    if (this.leaseMs <= 0) throw new Error("leaseMs must be positive");
+    this.durable = store.durable;
   }
 
+  claim(messageId: string, fingerprint: string): LeaseClaim {
+    this.store.purge(this.clock() - this.ttlMs);
+    return this.store.claim(messageId, fingerprint, this.clock(), this.leaseMs);
+  }
+  renew(messageId: string, owner: string): boolean {
+    return this.store.renew(messageId, owner, this.clock(), this.leaseMs);
+  }
+  complete(messageId: string, owner: string, result: unknown): boolean {
+    return this.store.complete(messageId, owner, result, this.clock());
+  }
+  fail(messageId: string, owner: string): boolean {
+    return this.store.fail(messageId, owner, this.clock());
+  }
   first(messageId: string): boolean {
-    const now = this.clock();
-    this.evict(now);
-    if (this.seen.has(messageId)) return false;
-    this.seen.set(messageId, now);
-    return true;
-  }
-
-  release(messageId: string): void {
-    this.seen.delete(messageId);
-  }
-
-  private evict(now: number): void {
-    for (const [key, at] of this.seen) {
-      if (now - at > this.ttlMs) this.seen.delete(key);
-    }
+    return this.claim(messageId, messageId).status === "acquired";
   }
 }
 
 export interface SqliteEntryIdempotencyStoreOptions extends EntryIdempotencyStoreOptions {
-  /** 默认使用内存数据库；生产环境应传入持久化文件路径。 */
   path?: string;
 }
 
-/**
- * 基于 better-sqlite3 的 durable 入口幂等存储。
- * SQLite 的唯一键约束保证多个进程/实例同时投递时只有一个 first() 成功。
- */
-export class SqliteEntryIdempotencyStore implements EntryIdempotencyStoreLike {
-  private readonly db: Database.Database;
-  private readonly ttlMs: number;
-  private readonly clock: () => number;
-
+export class SqliteEntryIdempotencyStore extends EntryIdempotencyStore {
+  private readonly sqlite: SqliteLeaseStore;
   constructor(opts: SqliteEntryIdempotencyStoreOptions = {}) {
-    this.db = new Database(opts.path ?? ":memory:");
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS entry_idempotency (
-        message_id TEXT PRIMARY KEY,
-        seen_at INTEGER NOT NULL
-      )
-    `);
-    this.ttlMs = opts.ttlMs ?? 24 * 60 * 60 * 1000;
-    this.clock = opts.clock ?? Date.now;
+    const sqlite = new SqliteLeaseStore(opts.path ?? ":memory:", "entry");
+    super(opts, sqlite);
+    this.sqlite = sqlite;
   }
-
-  first(messageId: string): boolean {
-    const now = this.clock();
-    this.evict(now);
-    const result = this.db
-      .prepare("INSERT OR IGNORE INTO entry_idempotency (message_id, seen_at) VALUES (?, ?)")
-      .run(messageId, now);
-    return result.changes === 1;
-  }
-
-  release(messageId: string): void {
-    this.db.prepare("DELETE FROM entry_idempotency WHERE message_id = ?").run(messageId);
-  }
-
-  close(): void {
-    this.db.close();
-  }
-
-  private evict(now: number): void {
-    this.db
-      .prepare("DELETE FROM entry_idempotency WHERE seen_at < ?")
-      .run(now - this.ttlMs);
-  }
+  close(): void { this.sqlite.close(); }
 }
 
-// 保留常见的 SQLite 大写写法，便于调用方按项目命名习惯导入。
 export const SQLiteEntryIdempotencyStore = SqliteEntryIdempotencyStore;
-

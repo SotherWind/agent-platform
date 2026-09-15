@@ -1,0 +1,15 @@
+.ask-user {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ask-user__bubble {
+  margin: 0;
+  max-width: min(520px, 86%);
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  line-height: 1.55;
+  text-wrap: pretty;
+}

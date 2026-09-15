@@ -8,6 +8,10 @@
     "clean": "pnpm -r exec rimraf node_modules && (rimraf node_modules || node -e \"process.exit(0)\")",
     "web:bi-analyst": "pnpm --filter @agent-platform/web-bi-analyst dev"
   },
+  "engines": {
+    "node": ">=22.14.0 <23",
+    "pnpm": "9.15.9"
+  },
   "devDependencies": {
     "rimraf": "^6.0.1"
   },

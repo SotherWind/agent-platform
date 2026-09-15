@@ -1,0 +1,27 @@
+{
+  "name": "@agent-platform/rag-bot-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "智能客服 HTTP 薄壳：鉴权 + rag-boot 图执行的翻译层",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "repro:crash": "tsx scripts/crash-repro.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@agent-platform/rag-boot": "workspace:*",
+    "@qdrant/js-client-rest": "^1.18.0",
+    "better-sqlite3": "^12.11.1",
+    "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "@types/better-sqlite3": "^7.6.13",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11"
+  }
+}

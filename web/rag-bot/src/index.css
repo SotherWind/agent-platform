@@ -1,0 +1,316 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+  background: #f5f7fa;
+}
+
+/* ---------- 登录页 ---------- */
+
+.login-page {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(160deg, #e8f0fe 0%, #f5f7fa 60%);
+  padding: 24px;
+}
+
+.login-card {
+  width: 380px;
+  box-shadow: 0 8px 30px rgba(37, 99, 235, 0.08);
+  padding: 12px 8px;
+}
+
+/* ---------- 聊天页 ---------- */
+
+.chat-page {
+  height: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+}
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid #eef0f3;
+  background: #fff;
+}
+
+.chat-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.chat-empty {
+  margin: auto;
+  text-align: center;
+  padding: 40px 0;
+}
+
+.chat-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.chat-row-user {
+  justify-content: flex-end;
+}
+
+.chat-bubble {
+  max-width: 72%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 14px;
+}
+
+.chat-bubble-assistant {
+  background: #f4f6f9;
+  color: #1f2329;
+}
+
+.chat-bubble-user {
+  background: #2563eb;
+  color: #fff;
+}
+
+.typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.typing-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.typing-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #9aa4b2;
+  animation: typing-bounce 1.2s infinite;
+}
+
+.typing-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.6;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+.chat-input {
+  padding: 14px 20px;
+  border-top: 1px solid #eef0f3;
+  background: #fff;
+}
+
+/* ---------- 打字机光标 ---------- */
+
+.typewriter {
+  display: inline;
+}
+
+.typewriter-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: #2563eb;
+  animation: typewriter-blink 1s steps(2, start) infinite;
+}
+
+@keyframes typewriter-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* 终审尾巴提示（打字机追平、等待 LLM 终审） */
+.review-hint {
+  align-self: center;
+  margin-left: 8px;
+  font-size: 12px;
+  color: #9aa4b2;
+  white-space: nowrap;
+}
+
+/* ---------- 二期：引用来源 / 确认卡片 / 工单页 ---------- */
+
+.bubble-attachments {
+  margin-top: 10px;
+}
+
+.citations-collapse {
+  background: #fff;
+  border: 1px solid #e5e9f0;
+}
+
+.citations-collapse .ant-collapse-header {
+  font-size: 12px;
+  color: #6b7280;
+  padding: 6px 10px;
+}
+
+.citations-collapse .ant-collapse-content-box {
+  padding: 8px 10px;
+}
+
+.citations-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.citations-text {
+  font-size: 12px;
+  color: #4b5563;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.citations-meta {
+  font-size: 11px;
+  color: #9aa4b2;
+  margin-top: 2px;
+}
+
+.confirm-card {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid #ffd591;
+  border-radius: 8px;
+  background: #fffbe6;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.confirm-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.confirm-card-params {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: #614700;
+  line-height: 1.7;
+}
+
+.confirm-card-meta {
+  font-size: 11px;
+  color: #b7a261;
+}
+
+.confirm-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+/* ---------- 工单页 ---------- */
+
+.tickets-page {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.tickets-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.ticket-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.ticket-detail-meta {
+  font-size: 12px;
+  color: #9aa4b2;
+}
+
+.rating-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 480px;
+}
+
+.rating-form-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rating-form-hint {
+  font-size: 11px;
+}
+
+/* 终审尾巴提示（打字机追平、等待 LLM 终审） */
+.review-hint {
+  align-self: center;
+  margin-left: 8px;
+  font-size: 12px;
+  color: #9aa4b2;
+  white-space: nowrap;
+}

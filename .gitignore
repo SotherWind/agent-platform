@@ -35,6 +35,8 @@ coverage/
 *.db
 *.sqlite
 *.sqlite3
+*.sqlite-wal
+*.sqlite-shm
 
 # Temporary & cache
 tmp/
@@ -78,3 +80,9 @@ Desktop.ini
 
 # rag-boot 安全门禁报告的临时输出
 apps/rag-boot/security-report.json
+
+# Playwright MCP 本地会话缓存（浏览器快照，非源码）
+.playwright-mcp/
+
+# rag-bot 运行时数据（进程 PID、实时 CRM 数据等，非源码）
+server/rag-bot/data/

@@ -9,6 +9,7 @@
  */
 import { z } from "zod/v4";
 import { randomUUID } from "node:crypto";
+import Database from "better-sqlite3";
 
 export const TicketStatusSchema = z.enum([
   "open",
@@ -90,6 +91,7 @@ export class IllegalTicketTransitionError extends Error {
 }
 
 export interface TicketStore {
+  readonly durable: boolean;
   create(input: Omit<Ticket, "id" | "createdAt" | "updatedAt" | "history">): Promise<Ticket>;
   get(id: string): Promise<Ticket | undefined>;
   update(ticket: Ticket): Promise<void>;
@@ -98,6 +100,7 @@ export interface TicketStore {
 }
 
 export class InMemoryTicketStore implements TicketStore {
+  readonly durable = false;
   private readonly map = new Map<string, Ticket>();
 
   async create(input: Omit<Ticket, "id" | "createdAt" | "updatedAt" | "history">): Promise<Ticket> {
@@ -130,6 +133,63 @@ export class InMemoryTicketStore implements TicketStore {
   }
 }
 
+/** Durable ticket adapter used by the production assembly. */
+export class SqliteTicketStore implements TicketStore {
+  readonly durable: boolean;
+  private readonly db: Database.Database;
+
+  constructor(path: string) {
+    this.durable = path !== ":memory:" && path !== "";
+    this.db = new Database(path);
+    this.db.pragma("journal_mode = WAL");
+    this.db.pragma("busy_timeout = 5000");
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS tickets (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        idempotency_key TEXT UNIQUE,
+        ticket TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_tickets_tenant_thread
+        ON tickets (tenant_id, thread_id);
+    `);
+  }
+
+  async create(input: Omit<Ticket, "id" | "createdAt" | "updatedAt" | "history">): Promise<Ticket> {
+    const now = Date.now();
+    const ticket = TicketSchema.parse({ ...input, id: randomUUID(), createdAt: now, updatedAt: now, history: [] });
+    this.db.prepare(`
+      INSERT OR IGNORE INTO tickets (id, tenant_id, thread_id, idempotency_key, ticket)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(ticket.id, ticket.tenantId, ticket.threadId, ticket.idempotencyKey, JSON.stringify(ticket));
+    return (await this.findByIdempotencyKey(ticket.idempotencyKey ?? "")) ?? ticket;
+  }
+
+  async get(id: string): Promise<Ticket | undefined> {
+    const row = this.db.prepare("SELECT ticket FROM tickets WHERE id = ?").get(id) as { ticket: string } | undefined;
+    return row ? TicketSchema.parse(JSON.parse(row.ticket)) : undefined;
+  }
+  async update(ticket: Ticket): Promise<void> {
+    this.db.prepare(`
+      UPDATE tickets SET tenant_id = ?, thread_id = ?, idempotency_key = ?, ticket = ? WHERE id = ?
+    `).run(ticket.tenantId, ticket.threadId, ticket.idempotencyKey, JSON.stringify(ticket), ticket.id);
+  }
+  async list(opts: { tenantId?: string; threadId?: string } = {}): Promise<Ticket[]> {
+    const rows = this.db.prepare(`
+      SELECT ticket FROM tickets
+      WHERE (? IS NULL OR tenant_id = ?) AND (? IS NULL OR thread_id = ?)
+    `).all(opts.tenantId ?? null, opts.tenantId ?? null, opts.threadId ?? null, opts.threadId ?? null) as Array<{ ticket: string }>;
+    return rows.map((row) => TicketSchema.parse(JSON.parse(row.ticket)));
+  }
+  async findByIdempotencyKey(key: string): Promise<Ticket | undefined> {
+    if (!key) return undefined;
+    const row = this.db.prepare("SELECT ticket FROM tickets WHERE idempotency_key = ?").get(key) as { ticket: string } | undefined;
+    return row ? TicketSchema.parse(JSON.parse(row.ticket)) : undefined;
+  }
+  close(): void { this.db.close(); }
+}
+
 export interface TicketServiceOptions {
   store?: TicketStore;
   clock?: () => number;
@@ -142,11 +202,13 @@ export interface TicketServiceOptions {
  * 新单标记 secondVisit = true。这是 resolution rate 分母里「无二次来访」的来源。
  */
 export class TicketService {
+  readonly durable: boolean;
   private readonly store: TicketStore;
   private readonly clock: () => number;
 
   constructor(options: TicketServiceOptions = {}) {
     this.store = options.store ?? new InMemoryTicketStore();
+    this.durable = this.store.durable;
     this.clock = options.clock ?? Date.now;
   }
 

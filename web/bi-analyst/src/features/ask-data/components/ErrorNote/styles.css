@@ -1,0 +1,6 @@
+.ask-error {
+  margin: 0 0 var(--space-4);
+  max-width: 65ch;
+  color: var(--danger);
+  line-height: 1.6;
+}

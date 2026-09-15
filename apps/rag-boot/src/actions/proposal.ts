@@ -1,38 +1,29 @@
-/**
- * T5.3 propose / confirm / execute 三段分离
- *
- * Diffco 称之为「整个系统中最重要的一条设计规则」：Agent 建议，用户确认，代码执行。
- *
- * 代码级保证（清单 559 行）：**不存在「LLM 输出直接触发写操作」的路径**。
- * 做法是把三段拆成三个独立对象与三个独立方法，让「跳过 confirm 直接 execute」
- * 在类型与运行时两侧都不可达：
- * - propose() 只返回 proposal（含 confirmToken），不接触任何执行器
- * - confirm() 校验令牌绑定与有效期，返回「已确认」状态
- * - execute() 只接受**已确认且在有效期内**的 proposal
- */
 import { z } from "zod/v4";
-import { hashString, stableStringify, type AgentTool } from "../tools/contract";
+import { randomUUID, randomBytes, createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { stableStringify, type AgentTool, type ConfirmationCheck } from "../tools/contract";
 import { GuardrailBlockedError } from "../errors";
+import { LeaseLostError, OperationInProgressError } from "../reliability/lease-store";
+import { MemoryProposalStore, type ProposalStore } from "./proposal-store";
 
 export const ActionProposalSchema = z.object({
-  id: z.string(),
-  /** 动作类型，对应一个 write 工具 */
-  action: z.string(),
+  id: z.string().min(1),
+  action: z.string().min(1),
   params: z.record(z.string(), z.unknown()),
-  /** 展示给用户的确认话术 */
   summary: z.string(),
-  tenantId: z.string(),
-  threadId: z.string(),
-  /** 令牌绑定的会话身份 */
-  principal: z.string(),
-  /** 确认令牌：由 id + threadId + principal + secret 派生 */
+  tenantId: z.string().min(1),
+  threadId: z.string().min(1),
+  principal: z.string().min(1),
   confirmToken: z.string(),
   createdAt: z.number(),
   expiresAt: z.number(),
-  status: z.enum(["pending", "confirmed", "executed", "expired", "rejected"]),
+  status: z.enum(["pending", "confirmed", "queued", "executing", "failed", "executed", "expired", "rejected"]),
   idempotencyKey: z.string(),
+  executionOwner: z.string().nullable().optional(),
+  executionLeaseUntil: z.number().nullable().optional(),
+  executionResult: z.unknown().nullable().optional(),
+  signalId: z.string().nullable().optional(),
+  queuedAt: z.number().optional(),
 });
-
 export type ActionProposal = z.infer<typeof ActionProposalSchema>;
 
 export const ActionResultSchema = z.object({
@@ -42,16 +33,15 @@ export const ActionResultSchema = z.object({
   result: z.unknown().nullable().default(null),
   error: z.string().nullable().default(null),
   at: z.number(),
-  /** 执行是否走了确定性后端（永远为 true，供审计断言） */
   deterministic: z.boolean().default(true),
 });
-
 export type ActionResult = z.infer<typeof ActionResultSchema>;
 
 export interface ProposalServiceOptions {
-  /** 令牌派生密钥。生产环境从配置注入，不落代码库 */
   secret?: string;
+  store?: ProposalStore;
   ttlMs?: number;
+  leaseMs?: number;
   clock?: () => number;
   onAudit?: (entry: {
     kind: "propose" | "confirm" | "reject" | "execute" | "expire";
@@ -61,208 +51,194 @@ export interface ProposalServiceOptions {
   }) => void;
 }
 
-/** 派生确认令牌：绑定 proposalId + threadId + principal */
-function deriveToken(
-  secret: string,
-  parts: { id: string; threadId: string; principal: string },
-): string {
-  return hashString(
-    [secret, parts.id, parts.threadId, parts.principal].join("|"),
-  );
+function deny(reasonCode: string, message: string): never {
+  throw new GuardrailBlockedError(message, { stage: "actions", reasonCode });
 }
 
-/**
- * 三段分离服务。
- *
- * 注意 `propose()` 的入参里**没有**执行器——Agent 侧拿不到任何可执行的东西，
- * 只能拿到一个待确认的 proposal 对象。这是设计约束，不是约定。
- */
+function equalToken(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function businessParams(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([key]) =>
+    !["tenantId", "threadId", "principal", "confirmToken", "authContext"].includes(key)));
+}
+
+/** Authoritative action lifecycle. Returned objects are snapshots, never mutable authority. */
 export class ProposalService {
+  readonly durable: boolean;
+  readonly productionReady: boolean;
   private readonly secret: string;
+  private readonly store: ProposalStore;
   private readonly ttlMs: number;
+  private readonly leaseMs: number;
   private readonly clock: () => number;
   private readonly onAudit: NonNullable<ProposalServiceOptions["onAudit"]>;
-  private readonly proposals = new Map<string, ActionProposal>();
-  private seq = 0;
 
   constructor(options: ProposalServiceOptions = {}) {
-    this.secret = options.secret ?? "rag-boot-dev-secret";
-    this.ttlMs = options.ttlMs ?? 15 * 60 * 1000;
+    this.secret = options.secret ?? randomBytes(32).toString("hex");
+    this.store = options.store ?? new MemoryProposalStore();
+    this.durable = this.store.durable;
+    this.productionReady = this.durable && Buffer.byteLength(options.secret ?? "") >= 32 &&
+      options.secret !== "rag-boot-dev-secret";
+    this.ttlMs = options.ttlMs ?? 15 * 60_000;
+    this.leaseMs = options.leaseMs ?? 60_000;
+    if (this.ttlMs <= 0 || this.leaseMs <= 0) throw new Error("Action TTL and lease must be positive.");
     this.clock = options.clock ?? Date.now;
     this.onAudit = options.onAudit ?? (() => {});
   }
 
-  /** 第一段：Agent 产出 proposal。不含任何执行能力 */
+  private token(proposal: Pick<ActionProposal,
+    "id" | "action" | "params" | "tenantId" | "threadId" | "principal" | "expiresAt">): string {
+    return createHmac("sha256", this.secret).update(stableStringify({
+      id: proposal.id, action: proposal.action, params: proposal.params,
+      tenantId: proposal.tenantId, threadId: proposal.threadId,
+      principal: proposal.principal, expiresAt: proposal.expiresAt,
+    })).digest("hex");
+  }
+
+  private require(id: string): ActionProposal {
+    return this.store.get(id) ?? deny("proposal_not_found", "Proposal not found.");
+  }
+
+  private audit(kind: Parameters<NonNullable<ProposalServiceOptions["onAudit"]>>[0]["kind"],
+    proposal: ActionProposal, detail?: string): void {
+    this.onAudit({ kind, proposal: structuredClone(proposal), at: this.clock(), detail });
+  }
+
   propose(input: {
-    action: string;
-    params: Record<string, unknown>;
-    summary: string;
-    tenantId: string;
-    threadId: string;
-    principal: string;
+    action: string; params: Record<string, unknown>; summary: string;
+    tenantId: string; threadId: string; principal: string;
   }): ActionProposal {
     const now = this.clock();
-    this.seq += 1;
-    const id = `prop-${now}-${this.seq}`;
-    const token = deriveToken(this.secret, {
-      id,
-      threadId: input.threadId,
-      principal: input.principal,
+    const proposal = ActionProposalSchema.parse({
+      ...input, params: structuredClone(businessParams(input.params)),
+      id: `prop-${randomUUID()}`, confirmToken: "", idempotencyKey: "",
+      createdAt: now, expiresAt: now + this.ttlMs, status: "pending",
     });
+    proposal.confirmToken = this.token(proposal);
+    // A newly requested action is distinct; retries of the same proposal reuse this key forever.
+    proposal.idempotencyKey = createHash("sha256")
+      .update(stableStringify([proposal.tenantId, proposal.principal, proposal.id])).digest("hex");
+    this.store.insert(proposal);
+    this.audit("propose", proposal);
+    return structuredClone(proposal);
+  }
 
-    const proposal: ActionProposal = ActionProposalSchema.parse({
-      id,
-      action: input.action,
-      params: input.params,
-      summary: input.summary,
-      tenantId: input.tenantId,
-      threadId: input.threadId,
-      principal: input.principal,
-      confirmToken: token,
-      createdAt: now,
-      expiresAt: now + this.ttlMs,
-      status: "pending",
-      idempotencyKey: hashString(
-        [input.threadId, input.action, stableStringify(input.params)].join("|"),
-      ),
+  get(id: string): ActionProposal | undefined { return this.store.get(id); }
+  all(): ActionProposal[] { return this.store.all(); }
+
+  confirm(input: {
+    proposalId: string; token: string; tenantId: string; threadId: string; principal: string;
+  }): ActionProposal {
+    const current = this.require(input.proposalId);
+    if (input.tenantId !== current.tenantId || input.threadId !== current.threadId ||
+        input.principal !== current.principal || !equalToken(this.token(current), input.token)) {
+      this.audit("reject", current, "confirmation identity mismatch");
+      deny("token_identity_mismatch", "Confirm token is not valid for this session.");
+    }
+    const proposal = this.store.change(current.id, (p) => {
+      if (["expired", "rejected"].includes(p.status)) return p;
+      // Repeating confirm never regresses queued/executing/executed state.
+      if (p.status !== "pending") return p;
+      return { ...p, status: this.clock() >= p.expiresAt ? "expired" : "confirmed" };
     });
-
-    this.proposals.set(id, proposal);
-    this.onAudit({ kind: "propose", proposal, at: now });
+    if (proposal.status === "expired") {
+      this.audit("expire", proposal);
+      deny("proposal_expired", "Proposal expired. Please request a new one.");
+    }
+    if (proposal.status === "rejected") deny("not_confirmed", "Proposal was rejected.");
+    if (current.status === "pending") this.audit("confirm", proposal);
     return proposal;
   }
 
-  get(id: string): ActionProposal | undefined {
-    return this.proposals.get(id);
+  verifyConfirmation(input: ConfirmationCheck): { idempotencyKey: string } | null {
+    const p = this.get(input.proposalId);
+    if (!p || !["confirmed", "queued", "executing", "failed"].includes(p.status)) return null;
+    if (p.queuedAt === undefined && this.clock() >= p.expiresAt) return null;
+    if (!equalToken(this.token(p), input.token) || p.action !== input.toolName ||
+        p.tenantId !== input.tenantId || p.threadId !== input.threadId ||
+        p.principal !== input.principal || stableStringify(p.params) !== stableStringify(input.args)) return null;
+    return { idempotencyKey: p.idempotencyKey };
   }
 
-  /**
-   * 第二段：用户确认。
-   *
-   * 令牌与会话身份绑定：他人持令牌无法确认——令牌里编进了 threadId 与 principal，
-   * 换个会话来确认，重新派生出的令牌与原令牌不一致，直接拒绝。
-   */
-  confirm(input: { proposalId: string; token: string; threadId: string; principal: string }): ActionProposal {
-    const proposal = this.proposals.get(input.proposalId);
-    if (!proposal) {
-      throw new GuardrailBlockedError("Proposal not found.", {
-        stage: "confirm",
-        reasonCode: "proposal_not_found",
-      });
-    }
-
-    if (this.clock() > proposal.expiresAt) {
-      const expired: ActionProposal = { ...proposal, status: "expired" };
-      this.proposals.set(proposal.id, expired);
-      this.onAudit({ kind: "expire", proposal: expired, at: this.clock() });
-      throw new GuardrailBlockedError("Proposal expired. Please request a new one.", {
-        stage: "confirm",
-        reasonCode: "proposal_expired",
-      });
-    }
-
-    const expected = deriveToken(this.secret, {
-      id: proposal.id,
-      threadId: input.threadId,
-      principal: input.principal,
+  /** Reserve the stable signal identity before emit, so a crash can safely repeat submission. */
+  markQueued(proposalId: string, signalId: string): ActionProposal {
+    this.require(proposalId);
+    return this.store.change(proposalId, (p) => {
+      if (p.signalId) {
+        if (p.signalId !== signalId) deny("signal_mismatch", "Proposal is already linked to another signal.");
+        return p;
+      }
+      if (p.status !== "confirmed") deny("not_confirmed", "Only a confirmed proposal can be queued.");
+      if (this.clock() >= p.expiresAt) deny("proposal_expired", "Confirmed proposal expired before submission.");
+      return { ...p, status: "queued", signalId, queuedAt: this.clock() };
     });
-
-    if (expected !== input.token || input.threadId !== proposal.threadId) {
-      this.onAudit({
-        kind: "reject",
-        proposal,
-        at: this.clock(),
-        detail: "confirm token does not match session identity",
-      });
-      throw new GuardrailBlockedError(
-        "Confirm token is not valid for this session.",
-        { stage: "confirm", reasonCode: "token_identity_mismatch" },
-      );
-    }
-
-    const confirmed: ActionProposal = { ...proposal, status: "confirmed" };
-    this.proposals.set(proposal.id, confirmed);
-    this.onAudit({ kind: "confirm", proposal: confirmed, at: this.clock() });
-    return confirmed;
   }
 
-  /**
-   * 第三段：确定性后端执行。
-   *
-   * 硬约束：
-   * - 只接受 status === "confirmed" 的 proposal（pending 直接拒绝）
-   * - 执行路径不经过 LLM：调用方传入的是 `AgentTool.execute`，是普通函数
-   * - 工具执行走 T3.2 幂等，重复确认不会重复生效
-   */
   async execute(
-    proposal: ActionProposal,
+    snapshot: ActionProposal,
     tool: AgentTool<any, any>,
     executeFn: (tool: AgentTool<any, any>, input: unknown, token: string) => Promise<unknown>,
   ): Promise<ActionResult> {
-    const now = this.clock();
-    if (tool.kind !== "write" || !tool.requiresConfirmation) {
-      throw new GuardrailBlockedError(
-        `Proposal ${proposal.id} must execute a confirmed write tool.`,
-        { stage: "execute", reasonCode: "invalid_write_tool" },
-      );
+    const stored = this.require(snapshot.id);
+    if (snapshot.action !== stored.action || stableStringify(snapshot.params) !== stableStringify(stored.params) ||
+        snapshot.tenantId !== stored.tenantId || snapshot.threadId !== stored.threadId ||
+        snapshot.principal !== stored.principal || snapshot.confirmToken !== stored.confirmToken) {
+      deny("proposal_tampered", "Proposal contents do not match the stored proposal.");
     }
-    if (tool.name !== proposal.action || tool.kind !== "write") {
-      throw new GuardrailBlockedError(
-        `Proposal action ${proposal.action} does not match tool ${tool.name}.`,
-        { stage: "execute", reasonCode: "proposal_tool_mismatch" },
-      );
-    }
-
-    if (proposal.status !== "confirmed") {
-      throw new GuardrailBlockedError(
-        `Proposal ${proposal.id} is not confirmed (status=${proposal.status}). Execution refused.`,
-        { stage: "execute", reasonCode: "not_confirmed" },
-      );
-    }
-    if (now > proposal.expiresAt) {
-      throw new GuardrailBlockedError("Confirmed proposal expired before execution.", {
-        stage: "execute",
-        reasonCode: "proposal_expired",
+    if (tool.kind !== "write" || !tool.requiresConfirmation) deny("invalid_write_tool", "A confirmed write tool is required.");
+    if (tool.name !== stored.action) deny("proposal_tool_mismatch", "Proposal action does not match the tool.");
+    const owner = randomUUID();
+    const claimed = this.store.change(stored.id, (p) => {
+      if (p.status === "executed") return p;
+      if (!["confirmed", "queued", "failed", "executing"].includes(p.status)) {
+        deny("not_confirmed", "Proposal is not confirmed. Execution refused.");
+      }
+      if (p.queuedAt === undefined && this.clock() >= p.expiresAt) {
+        deny("proposal_expired", "Confirmed proposal expired before execution.");
+      }
+      if (p.status === "executing" && (p.executionLeaseUntil ?? 0) > this.clock()) {
+        throw new OperationInProgressError(p.id);
+      }
+      return { ...p, status: "executing", executionOwner: owner, executionLeaseUntil: this.clock() + this.leaseMs };
+    });
+    const resultOf = (ok: boolean, result: unknown, error: string | null): ActionResult =>
+      ActionResultSchema.parse({
+        proposalId: stored.id, action: stored.action, ok, result, error, at: this.clock(), deterministic: true,
       });
-    }
-
+    if (claimed.status === "executed") return resultOf(true, claimed.executionResult, null);
+    let leaseLost = false;
+    const heartbeat = setInterval(() => {
+      try {
+        this.store.change(stored.id, (p) => {
+          if (p.executionOwner !== owner || p.status !== "executing" || (p.executionLeaseUntil ?? 0) <= this.clock()) {
+            throw new LeaseLostError();
+          }
+          return { ...p, executionLeaseUntil: this.clock() + this.leaseMs };
+        });
+      } catch { leaseLost = true; }
+    }, Math.max(1, Math.floor(this.leaseMs / 3)));
+    heartbeat.unref();
     try {
-      const result = await executeFn(tool, proposal.params, proposal.confirmToken);
-      const executed: ActionProposal = { ...proposal, status: "executed" };
-      this.proposals.set(proposal.id, executed);
-      this.onAudit({ kind: "execute", proposal: executed, at: this.clock() });
-      return ActionResultSchema.parse({
-        proposalId: proposal.id,
-        action: proposal.action,
-        ok: true,
-        result,
-        error: null,
-        at: this.clock(),
-        deterministic: true,
+      const result = await executeFn(tool, structuredClone(claimed.params), claimed.confirmToken);
+      const executed = this.store.change(stored.id, (p) => {
+        if (leaseLost || p.executionOwner !== owner || (p.executionLeaseUntil ?? 0) <= this.clock()) throw new LeaseLostError();
+        return { ...p, status: "executed", executionOwner: null, executionLeaseUntil: null, executionResult: result };
       });
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      const result = ActionResultSchema.parse({
-        proposalId: proposal.id,
-        action: proposal.action,
-        ok: false,
-        result: null,
-        error,
-        at: this.clock(),
-        deterministic: true,
-      });
-      this.onAudit({
-        kind: "execute",
-        proposal,
-        at: this.clock(),
-        detail: error,
-      });
-      return result;
+      this.audit("execute", executed);
+      return resultOf(true, result, null);
+    } catch (error) {
+      this.store.change(stored.id, (p) =>
+        p.status === "executing" && p.executionOwner === owner && (p.executionLeaseUntil ?? 0) > this.clock()
+          ? { ...p, status: "failed", executionOwner: null, executionLeaseUntil: null } : p);
+      this.audit("execute", stored, error instanceof Error ? error.message : String(error));
+      if (error instanceof LeaseLostError) throw error;
+      return resultOf(false, null, error instanceof Error ? error.message : String(error));
+    } finally {
+      clearInterval(heartbeat);
     }
-  }
-
-  /** 供测试：取出全部 proposal */
-  all(): ActionProposal[] {
-    return [...this.proposals.values()];
   }
 }

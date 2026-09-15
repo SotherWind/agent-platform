@@ -1,4 +1,4 @@
-import { StateGraph, START, END, MemorySaver } from "@langchain/langgraph";
+import { StateGraph, START, END, MemorySaver, getConfig, getWriter } from "@langchain/langgraph";
 import type { BaseMessage } from "@langchain/core/messages";
 import type {
   BuildGraphConfig,
@@ -35,7 +35,8 @@ import {
   DEFAULT_SENTIMENT_INTENSITY_THRESHOLD,
 } from "./escalation";
 import { scoreSentiment } from "./sentiment";
-import { executeTool, assertToolRegistry, type AgentTool } from "./tools/contract";
+import { executeTool, parseToolInput, assertToolRegistry, stableStringify, type AgentTool } from "./tools/contract";
+import { ActionDispatcher } from "./actions/dispatcher";
 import { InMemoryIdempotencyStore, type IdempotencyStore } from "./tools/idempotency";
 import { InMemoryTicketStore, TicketService } from "./tickets";
 import { Tracer, tracer as defaultTracer, type SpanAttributes } from "./observability/tracer";
@@ -113,7 +114,7 @@ function resolveConfiguredLlm(
 async function resolveDefaultLlm(config: BuildGraphConfig): Promise<Llm | undefined> {
   const configured = Object.values(config.llmRouter ?? {}).find(Boolean) as Llm | undefined;
   if (configured) return configured;
-  if (Object.values(config.llms ?? {}).some((value) => asLlmList(value).length > 0)) {
+  if (config.llms !== undefined || config.llmRouter !== undefined) {
     return undefined;
   }
 
@@ -258,11 +259,26 @@ function routeAfterTools(
   return "specialist";
 }
 
+/**
+ * T9.5 单类别直通判定：specialistPolicy = "skipSingleCategory" 且
+ * 分诊只有单一类别、不需要实时数据时，跳过专家/编排管线。
+ * generate 节点对缺失的 specialistOutputs / 草稿有天然降级（纯 RAG 生成）。
+ */
+function shouldBypassSpecialist(
+  state: State,
+  policy: BuildGraphConfig["specialistPolicy"],
+): boolean {
+  if (policy !== "skipSingleCategory") return false;
+  if (state.route !== "specialist") return false;
+  const categories = state.triage?.categories ?? [];
+  if (categories.length !== 1) return false;
+  return !state.triage?.needsRealtimeData;
+}
+
 function routeAfterReview(
   state: State,
   sentimentThreshold: number = DEFAULT_SENTIMENT_INTENSITY_THRESHOLD,
-): "output" | "escalate" {
-  if (state.terminationReason === "all_models_failed") return "escalate";
+): "output" | "escalate" {  if (state.terminationReason === "all_models_failed") return "escalate";
   if (state.review && !state.review.passed) return "escalate";
   if (state.consecutiveFallbackTurns >= 2) return "escalate";
   if (state.consecutiveLowConfidenceTurns >= 2) return "escalate";
@@ -281,11 +297,45 @@ function routeAfterReview(
  * 所有外部依赖均可通过 BuildGraphConfig 注入；未注入时走安全降级而不是联网猜测。
  */
 export const buildGraph = async (configs: BuildGraphConfig = {}) => {
+  const production =
+    configs.environment === "production" || process.env.NODE_ENV === "production";
+  if (production) {
+    const checkpointerDurable = Boolean(
+      (configs.checkpointer as unknown as { durable?: boolean } | undefined)?.durable,
+    );
+    const idempotencyDurable = Boolean(
+      (configs.idempotency as { durable?: boolean } | undefined)?.durable,
+    );
+    const ticketDurable = Boolean(
+      (configs.ticketService as unknown as { durable?: boolean } | undefined)?.durable,
+    );
+    if (!configs.checkpointer || !checkpointerDurable) {
+      throw new Error("Production graph requires a durable checkpointer.");
+    }
+    if (!configs.idempotency || !idempotencyDurable) {
+      throw new Error("Production graph requires a durable tool idempotency store.");
+    }
+    if (!configs.ticketService || !ticketDurable) {
+      throw new Error("Production graph requires a durable ticket service.");
+    }
+    if (!configs.tools?.length || !configs.proposalService || !configs.signalBus || !configs.actionGuardrails) {
+      throw new Error("Production graph requires tools, proposal, signal and action guardrail modules.");
+    }
+    if (!configs.signalBus.durable) {
+      throw new Error("Production graph requires a durable action signal store.");
+    }
+    if (!configs.proposalService.productionReady) {
+      throw new Error("Production graph requires durable proposals and an explicit secret of at least 32 bytes.");
+    }
+    if (!configs.vectorStore && !process.env.QDRANT_URL && !process.env.QDRANT_API_KEY) {
+      throw new Error("Production graph requires a configured vector store.");
+    }
+  }
   const checkpointer = configs.checkpointer ?? new MemorySaver();
   const store =
     configs.vectorStore ??
     (process.env.QDRANT_URL || process.env.QDRANT_API_KEY || process.env.USE_QDRANT === "true"
-      ? await createVectorStore()
+      ? await createVectorStore({ publications: configs.knowledgePublications })
       : EMPTY_VECTOR_STORE);
   const reranker: Reranker | null =
     configs.reranker !== undefined
@@ -297,6 +347,9 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
   const fallbackLlm = await resolveDefaultLlm(configs);
   const llmFor = (task: LlmTask): Llm | undefined =>
     resolveConfiguredLlm(task, configs) ?? fallbackLlm;
+  if (production && (!llmFor("generate") || !llmFor("review") || !llmFor("triage"))) {
+    throw new Error("Production graph requires generation, review and triage models.");
+  }
 
   const prefilter = configs.prefilter ?? new Prefilter();
   const inputGuardrails = configs.inputGuardrails ?? new InputGuardrails();
@@ -315,6 +368,41 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
   const maxChunks = configs.maxChunks ?? 5;
   const confidenceThreshold = configs.confidenceThreshold ?? 0.35;
   const sessionTokenBudget = configs.sessionTokenBudget ?? 12_000;
+  const dispatcher = configs.proposalService && configs.signalBus && actionGuardrails
+    ? new ActionDispatcher({
+        proposals: configs.proposalService, signals: configs.signalBus,
+        tools: toolRegistry, idempotency, guardrails: actionGuardrails, clock: configs.clock,
+      })
+    : undefined;
+
+  const confirmationNode = withSpan(graphTracer, "tools", async (state) => {
+    try {
+      if (!dispatcher) throw new Error("Action dispatcher unavailable.");
+      const { proposal, signal } = await dispatcher.submit({
+        proposalId: state.confirmationProposalId,
+        token: state.confirmationToken,
+        tenantId: state.tenantId,
+        principal: state.principal,
+        threadId: state.threadId,
+      });
+      return {
+        confirmationProposalId: "",
+        confirmationToken: "",
+        actionProposals: [...state.actionProposals.filter((item) => item.id !== proposal.id), proposal],
+        actionSignals: [...state.actionSignals.filter((item) => item.id !== signal.id), signal],
+        finalAnswer: proposal.status === "executed"
+          ? "该操作已处理完成，无需重复提交。"
+          : "动作已确认并提交业务系统处理，完成状态以业务系统回执为准。",
+        route: "direct" as const,
+      };
+    } catch {
+      return {
+        confirmationProposalId: "", confirmationToken: "",
+        route: "escalate" as const, terminationReason: "confirmation_invalid",
+        finalAnswer: "确认信息无效、已过期或业务通道暂不可用，已转人工确认。",
+      };
+    }
+  });
 
   const turnStart = withSpan(graphTracer, "prefilter", async (state) => {
     // T2.3 fail-closed：租户检查放在图的**最入口**，而不是等到检索节点。
@@ -462,6 +550,7 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
     const result = await retrieve(store, {
       query: state.rewrittenQuery || state.sanitizedQuery || state.query,
       tenantId: state.tenantId,
+      scope: state.knowledgeScope,
       topK: 20,
       topN: maxChunks,
     });
@@ -602,7 +691,16 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
       };
     }
 
-    const args = request.args ?? {};
+    let args: Record<string, unknown>;
+    try {
+      args = parseToolInput(tool, request.args ?? {}) as Record<string, unknown>;
+    } catch {
+      return {
+        route: "escalate" as const,
+        terminationReason: "tool_invalid_input",
+        finalAnswer: "当前请求参数未通过安全校验，已为你转人工处理。",
+      };
+    }
     const allowlist = specialistToolAllowlist(state);
     if (!allowlist.includes(tool.name)) {
       return {
@@ -613,47 +711,23 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
     }
 
     const isWrite = tool.kind === "write";
-    const storedProposal = state.actionProposals.find(
-      (candidate) => candidate.action === tool.name &&
-        (candidate.status === "pending" || candidate.status === "confirmed"),
-    );
-    let proposal = storedProposal && configs.proposalService
-      ? configs.proposalService.get(storedProposal.id) ?? storedProposal
-      : storedProposal;
-    if (
-      configs.proposalService &&
-      state.confirmationProposalId &&
-      state.confirmationToken &&
-      state.confirmationProposalId === storedProposal?.id &&
-      storedProposal?.status === "pending"
-    ) {
-      try {
-        proposal = configs.proposalService.confirm({
-          proposalId: state.confirmationProposalId,
-          token: state.confirmationToken,
-          threadId: state.threadId,
-          principal: state.principal,
-        });
-      } catch {
-        return {
-          route: "escalate" as const,
-          terminationReason: "confirmation_invalid",
-          finalAnswer: "确认信息无效或已过期，已为你转人工确认。",
-        };
-      }
-    }
+    const proposal = state.actionProposals
+      .map((candidate) => configs.proposalService?.get(candidate.id))
+      .find((candidate) => candidate?.action === tool.name && candidate.status === "pending" &&
+        candidate.expiresAt > (configs.clock ?? Date.now)() &&
+        stableStringify(candidate.params) === stableStringify(args));
 
     const actionRequest = {
       toolName: tool.name,
       kind: tool.kind,
       allowlist,
       principal: state.principal,
-      confirmed: Boolean(proposal && proposal.status === "confirmed"),
+      confirmed: false,
       amountCents: typeof args.amountCents === "number" ? args.amountCents : undefined,
     };
     const actionVerdict = actionGuardrails?.check(actionRequest);
     if (actionVerdict && !actionVerdict.allowed &&
-        !(isWrite && actionVerdict.code === "confirmation_required" && !proposal)) {
+        !(isWrite && actionVerdict.code === "confirmation_required")) {
       return {
         route: "escalate" as const,
         terminationReason: `action_guardrail:${actionVerdict.code}`,
@@ -661,7 +735,7 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
       };
     }
 
-    if (isWrite && (!proposal || proposal.status !== "confirmed")) {
+    if (isWrite) {
       if (!configs.proposalService) {
         return {
           route: "escalate" as const,
@@ -684,52 +758,6 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
         actionProposals: proposals,
         pendingToolRequests: [],
         finalAnswer: `我可以帮你执行：${nextProposal.summary}\n请确认后继续处理（确认单：${nextProposal.id}）。`,
-        route: "review" as const,
-      };
-    }
-
-    // 写操作只允许通过结构化 ActionSignal 投递给业务系统；Agent 图不直接调用 CRM 写接口。
-    if (isWrite) {
-      if (!configs.signalBus) {
-        return {
-          route: "escalate" as const,
-          terminationReason: "signal_bus_unavailable",
-          finalAnswer: "动作已确认，但业务系统信号通道暂不可用，已转人工确保不会重复执行。",
-        };
-      }
-      const signal = await configs.signalBus.emit({
-        type: tool.name,
-        tenantId: state.tenantId,
-        threadId: state.threadId,
-        principal: state.principal,
-        payload: args,
-        idempotencyKey: proposal?.idempotencyKey ?? `${state.threadId}:${tool.name}:${state.turnCount}`,
-        decisionBasis: state.citations.map((citation) => citation.chunkId),
-      });
-      const executedProposal = proposal && configs.proposalService
-        ? { ...proposal, status: "executed" as const }
-        : undefined;
-      return {
-        actionSignals: [...state.actionSignals, signal],
-        ...(executedProposal ? {
-          actionProposals: state.actionProposals.map((item) => item.id === executedProposal.id ? executedProposal : item),
-        } : {}),
-        toolTurns: state.toolTurns + 1,
-        toolsCalledThisTurn: true,
-        pendingToolRequests: [],
-        finalAnswer: `动作已确认并提交业务系统处理（信号：${signal.id}）。`,
-        toolCalls: {
-          name: tool.name,
-          kind: tool.kind,
-          ok: true,
-          idempotencyKey: signal.idempotencyKey,
-          deduped: false,
-          summary: JSON.stringify(signal),
-          turnIndex: state.turnCount,
-          at: (configs.clock ?? Date.now)(),
-          error: null,
-        },
-        budget: { ...state.budget, toolTurns: state.budget.toolTurns + 1 },
         route: "review" as const,
       };
     }
@@ -815,6 +843,15 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
 
   const generateNode = withSpan(graphTracer, "generate", async (state) => {
     const nodeUsage = emptyUsage();
+    // T9.5：仅当调用方通过 streamTokens 显式打开流式开关（configurable 标记）
+    // 且 custom writer 可用时，generate 才切换到 llm.stream 流式路径；
+    // 否则一律走原 invoke 路径，行为与用量统计完全不变。
+    // （不能只探 getWriter()——LangGraph 在普通 invoke 期间也可能返回 writer。）
+    const customWriter = getWriter();
+    const runConfig = getConfig();
+    const streamingEnabled =
+      customWriter != null &&
+      (runConfig as any)?.configurable?.["ragbootStreamTokens"] === true;
     const result = await generate(
       {
         query: state.query,
@@ -827,7 +864,13 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
         lowConfidence: state.lowConfidence,
         history: stateHistory(state),
       },
-      { llm: llmFor("generate"), onUsage: (response) => addUsage(nodeUsage, response) },
+      {
+        llm: llmFor("generate"),
+        onUsage: (response) => addUsage(nodeUsage, response),
+        ...(customWriter && streamingEnabled
+          ? { streamWriter: (delta: string) => customWriter({ type: "generate-delta", text: delta }) }
+          : {}),
+      },
     );
     // generate() 会把同一份响应同时放进 result.usage 与 onUsage，
     // 这里只取一处累加，否则每次生成会被计两遍。
@@ -884,6 +927,13 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
     reviewer: (reviewer as Reviewer).constructor.name,
     reviewPassed: update.review?.passed,
     reviewAttempts: update.review?.attempts,
+    // 终审拒绝原因进 span（运维排障：转人工轮必须能回答"为什么被拦"）
+    reviewViolations: update.review?.violations
+      ?.map((violation) => {
+        const item = violation as { code?: string; detail?: string };
+        return item.code ? `${item.code}${item.detail ? `:${item.detail}` : ""}` : String(violation);
+      })
+      .join(" | "),
     model: llmFor("review")?.model,
     tier: llmFor("review")?.tier,
     ...usageAttributes(state, update),
@@ -959,10 +1009,13 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
     };
   });
 
-  const outputNode = withSpan(graphTracer, "output", async () => ({}));
+  const outputNode = withSpan(graphTracer, "output", async (state) => ({
+    completedOperationId: state.operationId,
+  }));
 
   const workflow = new StateGraph(AgentState)
     .addNode("turnStart", turnStart)
+    .addNode("actionConfirmation", confirmationNode)
     .addNode("prefilter", prefilterNode)
     .addNode("guardrails", guardrailNode)
     .addNode("triageDecision", triageNode)
@@ -979,7 +1032,11 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
     .addNode("humanEscalation", escalateNode)
     .addNode("output", outputNode)
     .addEdge(START, "turnStart")
-    .addEdge("turnStart", "prefilter")
+    .addConditionalEdges("turnStart", (state) =>
+      state.confirmationProposalId || state.confirmationToken ? "confirmation" : "chat",
+      { confirmation: "actionConfirmation", chat: "prefilter" })
+    .addConditionalEdges("actionConfirmation", (state) => state.route === "escalate" ? "escalate" : "output",
+      { escalate: "humanEscalation", output: "output" })
     .addConditionalEdges("prefilter", (state) => state.route, {
       direct: "output",
       escalate: "humanEscalation",
@@ -1002,12 +1059,21 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
     .addEdge("retrieve", "rerank")
     .addEdge("rerank", "contextBudget")
     .addEdge("contextBudget", "confidenceCheck")
-    .addConditionalEdges("confidenceCheck", (state) => state.route, {
-      escalate: "humanEscalation",
-      specialist: "specialistNode",
-      pending: "specialistNode",
-      direct: "output",
-    })
+    .addConditionalEdges(
+      "confidenceCheck",
+      (state) =>
+        // T9.5：单类别且无需实时数据时直通生成（specialistPolicy 配置，默认关闭）
+        shouldBypassSpecialist(state, configs.specialistPolicy)
+          ? "directToGenerate"
+          : state.route,
+      {
+        escalate: "humanEscalation",
+        specialist: "specialistNode",
+        pending: "specialistNode",
+        direct: "output",
+        directToGenerate: "answerGeneration",
+      },
+    )
     .addConditionalEdges("specialistNode", (state) => routeAfterSpecialist(state, maxToolTurns), {
       tools: "toolExecutor",
       orchestrate: "orchestration",
@@ -1053,7 +1119,7 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
       state: Parameters<typeof originalInvoke>[0],
       config?: Parameters<typeof originalInvoke>[1],
     ) => {
-      const input = state as Partial<State>;
+      const input = (state ?? {}) as Partial<State>;
       const threadId = input.threadId || (config as any)?.configurable?.thread_id;
       const nextConfig = {
         ...(config ?? {}),
@@ -1063,7 +1129,7 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
         },
       };
       return originalInvoke(
-        { ...state, ...(threadId ? { threadId } : {}) },
+        state === null ? null : { ...state, ...(threadId ? { threadId } : {}) },
         injectCallbacks(nextConfig),
       );
     },
@@ -1071,7 +1137,7 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
       state: Parameters<typeof originalStream>[0],
       config?: Parameters<typeof originalStream>[1],
     ) => {
-      const input = state as Partial<State>;
+      const input = (state ?? {}) as Partial<State>;
       const threadId = input.threadId || (config as any)?.configurable?.thread_id;
       const nextConfig = {
         ...(config ?? {}),
@@ -1081,7 +1147,7 @@ export const buildGraph = async (configs: BuildGraphConfig = {}) => {
         },
       };
       return originalStream(
-        { ...state, ...(threadId ? { threadId } : {}) },
+        state === null ? null : { ...state, ...(threadId ? { threadId } : {}) },
         injectCallbacks(nextConfig),
       );
     },

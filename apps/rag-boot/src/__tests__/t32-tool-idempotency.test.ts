@@ -8,6 +8,7 @@
 import { executeTool, toolIdempotencyKey, stableStringify } from "../tools/contract";
 import { InMemoryIdempotencyStore, SqliteIdempotencyStore } from "../tools/idempotency";
 import { FakeBackend, createOrderStatusTool, createRefundTool } from "../tools/business";
+import { ProposalService } from "../actions/proposal";
 
 function readCtx(store: InMemoryIdempotencyStore, turnIndex = 1) {
   return {
@@ -36,7 +37,16 @@ describe("工具幂等", () => {
 
     // 写工具同理：确认后的重发不重复退款
     const refund = createRefundTool(backend);
-    const refundCtx = { ...readCtx(new InMemoryIdempotencyStore()), confirmToken: "tok" };
+    const service = new ProposalService();
+    const proposal = service.propose({
+      action: refund.name, params: { orderId: "o-2", amountCents: 100 },
+      summary: "refund", tenantId: "t", principal: "p", threadId: "th",
+    });
+    service.confirm({ proposalId: proposal.id, token: proposal.confirmToken, tenantId: "t", principal: "p", threadId: "th" });
+    const refundCtx = {
+      ...readCtx(new InMemoryIdempotencyStore()), confirmToken: proposal.confirmToken,
+      confirmationProposalId: proposal.id, verifyConfirmation: service.verifyConfirmation.bind(service),
+    };
     await executeTool(refund, { orderId: "o-2", amountCents: 100, tenantId: "t" }, refundCtx);
     await executeTool(refund, { orderId: "o-2", amountCents: 100, tenantId: "t" }, refundCtx);
     expect(backend.refunds).toHaveLength(1);

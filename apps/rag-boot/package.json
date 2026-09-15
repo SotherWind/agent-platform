@@ -2,13 +2,19 @@
   "name": "@agent-platform/rag-boot",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./src/*": "./src/*"
+  },
   "scripts": {
     "dev": "tsx src/index.ts",
     "test": "vitest run --pool=threads --no-file-parallelism --no-isolate --maxWorkers=1",
     "test:unit": "vitest run --project unit --pool=threads --no-file-parallelism --no-isolate --maxWorkers=1",
     "test:integration": "vitest run --project integration --pool=threads --no-file-parallelism --no-isolate --maxWorkers=1",
-    "test:security": "node scripts/check-security.mjs",
     "test:security": "node scripts/check-security.mjs",
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage --pool=threads --no-file-parallelism --no-isolate --maxWorkers=1",

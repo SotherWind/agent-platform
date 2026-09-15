@@ -13,14 +13,18 @@ import type {
   RerankedChunk,
   VectorStoreType,
   Reranker,
+  RetrievalScope,
 } from "../type";
 import { TenantMissingError } from "../errors";
+import { matchesKnowledgeScope } from "../knowledge-scope";
+import { isKnowledgeDocumentActive } from "../vectorstore";
 
 export interface RetrieveInput {
   query: string;
   tenantId: string;
   topK?: number;
   topN?: number;
+  scope?: RetrievalScope;
 }
 
 export interface RetrieveResult {
@@ -55,7 +59,9 @@ export async function retrieve(
   }
 
   try {
-    const chunks = await store.search(input.query, input.tenantId, topK);
+    const candidates = await store.search(input.query, input.tenantId, topK, input.scope);
+    const chunks = candidates.filter((chunk) => chunk.tenantId === input.tenantId &&
+      matchesKnowledgeScope(chunk.metadata, input.scope) && isKnowledgeDocumentActive(chunk.metadata));
     return { chunks, degraded: false, degradedReason: null };
   } catch (err) {
     // 向量库故障：不抛给上层，返回空 + 降级标记。

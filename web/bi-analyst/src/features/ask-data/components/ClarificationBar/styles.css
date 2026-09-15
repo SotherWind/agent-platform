@@ -1,0 +1,39 @@
+.ask-clarify {
+  margin-top: var(--space-2);
+}
+
+.ask-clarify__question {
+  margin: 0 0 var(--space-3);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.ask-clarify__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.ask-clarify__option {
+  padding: 8px 14px;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.ask-clarify__option:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.ask-clarify__option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ask-clarify__option:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}

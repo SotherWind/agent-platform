@@ -12,14 +12,21 @@ import type { EmbeddingsInterface } from "@langchain/core/embeddings";
 import { TextLoader } from "@langchain/classic/document_loaders/fs/text";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import { Document } from "@langchain/core/documents";
+import { randomUUID } from "node:crypto";
 import type {
   RetrievedChunk,
   VectorStoreConfig,
   IngestOptions,
   VectorStoreType,
   KnowledgeChangeAuditEntry,
+  RetrievalScope,
 } from "./type";
 import { createEmbeddings } from "./embeddings";
+import { MemoryKnowledgePublicationStore, type KnowledgePublicationStore, type KnowledgePublication } from "./knowledge-publication";
+import { KNOWLEDGE_SCOPE_KEYS, matchesKnowledgeScope } from "./knowledge-scope";
+import { TenantMissingError } from "./errors";
+
+type QdrantFilter = NonNullable<Parameters<QdrantClient["count"]>[1]>["filter"];
 
 /** 默认 chunk 字符数（与 RecursiveCharacterTextSplitter 一致） */
 const DEFAULT_CHUNK_SIZE = 500;
@@ -62,6 +69,9 @@ function enrichDocuments(docs: Document[], options: IngestOptions): Document[] {
           version: options.version ?? 1,
           effectiveAt: options.effectiveAt ?? null,
           expiredAt: options.expiredAt ?? null,
+          ...Object.fromEntries(KNOWLEDGE_SCOPE_KEYS
+            .filter((key) => options.knowledgeScope?.[key] !== undefined)
+            .map((key) => [key, [...options.knowledgeScope![key]!]])),
         },
       }),
   );
@@ -89,15 +99,32 @@ export function isKnowledgeDocumentActive(
   const effectiveAt = metadata.effectiveAt;
   const expiredAt = metadata.expiredAt;
   return (
+    metadata.published !== false &&
     (typeof effectiveAt !== "number" || effectiveAt <= now) &&
     (typeof expiredAt !== "number" || expiredAt > now)
   );
 }
 
-export function knowledgeFilter(tenantId: string, now: number = Date.now()) {
+export function knowledgeFilter(tenantId: string, now: number = Date.now(), scope: RetrievalScope = {}) {
+  if (!tenantId.trim()) throw new TenantMissingError();
   return {
-    must: [{ key: "metadata.tenantId", match: { value: tenantId } }],
+    must: [
+      { key: "metadata.tenantId", match: { value: tenantId } },
+      ...KNOWLEDGE_SCOPE_KEYS.map((key) => {
+        const granted = [...(scope[key] ?? [])];
+        const field = `metadata.${key}`;
+        return {
+          should: [
+            { is_empty: { key: field } },
+            ...(granted.length === 0 ? [] : key === "permissions"
+              ? [{ must_not: [{ key: field, match: { except: granted } }] }]
+              : [{ key: field, match: { any: granted } }]),
+          ],
+        };
+      }),
+    ],
     must_not: [
+      { key: "metadata.published", match: { value: false } },
       { key: "metadata.effectiveAt", range: { gt: now } },
       { key: "metadata.expiredAt", range: { lte: now } },
     ],
@@ -288,8 +315,7 @@ function readCollectionVectorSize(collection: {
 }
 
 /**
- * 嵌入模型切换后，若 collection 向量维度与当前模型不一致，则删除旧 collection。
- * 下次写入时 LangChain 会按新维度自动重建（避免 FakeEmbeddings 4 维 vs 真实模型 1024 维报错）。
+ * A dimension mismatch requires an explicit migration, never deletion of live knowledge.
  */
 async function ensureCollectionDimension(
   config: Pick<Required<VectorStoreConfig>, "url" | "apiKey" | "collectionName">,
@@ -309,10 +335,9 @@ async function ensureCollectionDimension(
   const expectedDim = (await embeddings.embedQuery("dimension-probe")).length;
   if (existingDim === expectedDim) return;
 
-  console.warn(
-    `[Qdrant] collection "${config.collectionName}" 维度 ${existingDim} ≠ ${expectedDim}，已自动删除并将在写入时重建`,
+  throw new Error(
+    `Qdrant collection "${config.collectionName}" dimension ${existingDim} does not match ${expectedDim}; migrate to a new collection explicitly.`,
   );
-  await client.deleteCollection(config.collectionName);
 }
 
 /** Qdrant 向量库封装 */
@@ -320,6 +345,7 @@ export class VectorStore implements VectorStoreType {
   private constructor(
     private readonly store: LangchainQdrantVectorStore,
     private readonly onKnowledgeChange?: (entry: KnowledgeChangeAuditEntry) => void | Promise<void>,
+    private readonly publications: KnowledgePublicationStore = new MemoryKnowledgePublicationStore(),
   ) {}
 
   /** 打开 LangChain Qdrant 客户端，并在连接前校验向量维度 */
@@ -336,33 +362,62 @@ export class VectorStore implements VectorStoreType {
     });
   }
 
-  /** 连接 Qdrant collection（不存在时 LangChain 会在首次写入时自动创建） */
+  /** 连接 Qdrant collection（不存在时 LangChain 会在连接期间创建） */
   static async open(
     overrides: Partial<VectorStoreConfig> = {},
   ): Promise<VectorStoreType> {
+    if (!overrides.publications) {
+      throw new Error("Qdrant requires an explicit publication store shared by all readers and writers.");
+    }
+    if (process.env.NODE_ENV === "production" && !overrides.publications?.durable) {
+      throw new Error("Production vector store requires a durable knowledge publication store.");
+    }
     const store = await VectorStore.openLangchainStore(overrides);
-    return new VectorStore(store, overrides.onKnowledgeChange);
+    return new VectorStore(store, overrides.onKnowledgeChange, overrides.publications);
   }
 
   /**
    * 写入 Document 向量。
-   * replace 默认为 true：同 documentId 先删后写，避免重复入库。
+   * Stage immutable generations, then atomically publish a complete generation.
    */
   async addDocuments(docs: Document[], options: IngestOptions): Promise<number> {
+    if (!options.tenantId.trim()) throw new TenantMissingError();
+    if (!options.documentId.trim()) throw new Error("documentId is required.");
     if (docs.length === 0) return 0;
 
-    let replacedExisting = false;
-    if (options.replace !== false) {
-      // 审计语义按真实状态而非调用意图：文档此前不存在是 create，覆盖了才记 replace。
-      // 此前无条件记 "replace"，导致首次写入的审计动作是错的。
-      replacedExisting = await this.documentExists(options.documentId, options.tenantId);
-      await this.deleteDocumentVectors(options.documentId, options.tenantId);
+    const previous = this.publications.get(options.tenantId, options.documentId);
+    const replacedExisting = previous
+      ? previous.generations.length > 0 || previous.legacy
+      : await this.documentExists(options.documentId, options.tenantId);
+    const generation = randomUUID();
+    const enriched = enrichDocuments(docs, options).map((doc) => new Document({
+      pageContent: doc.pageContent,
+      metadata: { ...doc.metadata, publicationId: generation, id: `${generation}:${doc.metadata.id}` },
+    }));
+    try {
+      for (let i = 0; i < enriched.length; i += INGEST_BATCH_SIZE) {
+        await this.store.addDocuments(enriched.slice(i, i + INGEST_BATCH_SIZE));
+      }
+      this.publications.publish({
+        tenantId: options.tenantId,
+        documentId: options.documentId,
+        generations: [...(options.replace === false ? previous?.generations ?? [] : []), generation],
+        legacy: options.replace === false && (previous?.legacy ?? true),
+      }, previous?.revision);
+    } catch (error) {
+      await this.store.delete({
+        filter: { must: [
+          ...documentFilter(options.documentId, options.tenantId).must,
+          { key: "metadata.publicationId", match: { value: generation } },
+        ] },
+      }).catch(() => {});
+      throw error;
     }
-
-    const enriched = enrichDocuments(docs, options);
-    for (let i = 0; i < enriched.length; i += INGEST_BATCH_SIZE) {
-      const batch = enriched.slice(i, i + INGEST_BATCH_SIZE);
-      await this.store.addDocuments(batch);
+    if (options.replace !== false) {
+      // Only remove generations observed before staging, never a concurrent publisher's data.
+      await this.deletePublishedVectors(options.documentId, options.tenantId, previous).catch(() => {
+        // Publication is committed; stale vectors remain invisible and can be cleaned later.
+      });
     }
     await this.onKnowledgeChange?.({
       action: options.replace === false || !replacedExisting ? "create" : "replace",
@@ -400,9 +455,28 @@ export class VectorStore implements VectorStoreType {
     return count > 0;
   }
 
-  private async deleteDocumentVectors(documentId: string, tenantId: string): Promise<void> {
+  private generationFilter(publications: KnowledgePublication[]): QdrantFilter {
+    const noLegacy = publications.filter((publication) => !publication.legacy).map((publication) => publication.documentId);
+    const generations = publications.flatMap((publication) => publication.generations);
+    return {
+      should: [
+        { must: [{ is_empty: { key: "metadata.publicationId" } }],
+          ...(noLegacy.length ? { must_not: [{ key: "metadata.documentId", match: { any: noLegacy } }] } : {}) },
+        ...(generations.length ? [{ key: "metadata.publicationId", match: { any: generations } }] : []),
+      ],
+    };
+  }
+
+  private async deletePublishedVectors(documentId: string, tenantId: string, previous?: KnowledgePublication) {
+    if (previous && !previous.legacy && previous.generations.length === 0) return;
     await this.store.delete({
-      filter: documentFilter(documentId, tenantId),
+      filter: {
+        must: documentFilter(documentId, tenantId).must,
+        should: [
+          ...(previous?.legacy === false ? [] : [{ is_empty: { key: "metadata.publicationId" } }]),
+          ...(previous?.generations.length ? [{ key: "metadata.publicationId", match: { any: previous.generations } }] : []),
+        ],
+      },
     });
   }
 
@@ -411,7 +485,10 @@ export class VectorStore implements VectorStoreType {
     documentId: string,
     tenantId: string,
   ): Promise<void> {
-    await this.deleteDocumentVectors(documentId, tenantId);
+    if (!tenantId.trim()) throw new TenantMissingError();
+    const previous = this.publications.get(tenantId, documentId);
+    this.publications.publish({ tenantId, documentId, generations: [], legacy: false }, previous?.revision);
+    await this.deletePublishedVectors(documentId, tenantId, previous);
     await this.onKnowledgeChange?.({
       action: "delete",
       tenantId,
@@ -428,17 +505,24 @@ export class VectorStore implements VectorStoreType {
     query: string,
     tenantId: string,
     topK: number = 10,
+    scope: RetrievalScope = {},
   ): Promise<RetrievedChunk[]> {
     const now = Date.now();
     const results = await this.store.similaritySearchWithScore(
       query,
       topK,
-      knowledgeFilter(tenantId, now),
+      { must: [knowledgeFilter(tenantId, now, scope), this.generationFilter(this.publications.list(tenantId))!] },
     );
     // 兼容旧 Qdrant / fake store 对 must_not 的忽略，应用层再做一次硬过滤。
     return results
       .filter(([doc]) => {
-        return isKnowledgeDocumentActive(doc.metadata, now);
+        const publication = this.publications.get(tenantId, String(doc.metadata.documentId));
+        const generation = doc.metadata.publicationId;
+        const published = generation === undefined
+          ? publication?.legacy !== false
+          : typeof generation === "string" && publication?.generations.includes(generation);
+        return published && doc.metadata.tenantId === tenantId &&
+          isKnowledgeDocumentActive(doc.metadata, now) && matchesKnowledgeScope(doc.metadata, scope);
       })
       .map(([doc, score]) => toRetrievedChunk(doc, score));
   }

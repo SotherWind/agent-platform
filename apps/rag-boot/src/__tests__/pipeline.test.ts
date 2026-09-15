@@ -1,5 +1,6 @@
 import { MemorySaver } from "@langchain/langgraph";
 import { createGraph } from "../index";
+import { admittedInput } from "./helpers/admitted-input";
 import { TenantMissingError } from "../errors";
 import { createFakeLlm } from "../llm/fake";
 import { buildGraph } from "../agent";
@@ -38,7 +39,10 @@ function llm() {
 
 describe("核心编排图", () => {
   it("直接调用公开入口时没有鉴权身份会 fail-closed", async () => {
-    const api = await createGraph({ reranker: null });
+    const api = await createGraph({
+      reranker: null, llms: {},
+      vectorStore: { search: async () => [], addDocuments: async () => 0, ingestFile: async () => 0, deleteByDocumentId: async () => {} },
+    });
     await expect(api.invoke({ query: "你好", tenantId: "tenant-a", authenticated: false, history: [] })).rejects.toBeInstanceOf(TenantMissingError);
   });
 
@@ -102,7 +106,7 @@ describe("核心编排图", () => {
       llms: { simple: model, small: model, large: model },
     });
     const chunks: string[] = [];
-    for await (const chunk of api.stream({ query: "退款规则", tenantId: "tenant-a", authenticated: true, threadId: "stream-1", history: [] }, { configurable: { thread_id: "stream-1" } })) {
+    for await (const chunk of api.stream(admittedInput({ query: "退款规则", tenantId: "tenant-a", threadId: "stream-1", history: [] }), { configurable: { thread_id: "stream-1" } })) {
       chunks.push(chunk);
     }
     expect(chunks.join("")).toContain("可核对");
