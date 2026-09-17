@@ -16,6 +16,8 @@ import type { Tracer } from "./observability/tracer";
 import type { AuthenticatedContext } from "./access";
 import type { SessionBindingStore } from "./session-binding";
 import type { KnowledgePublicationStore } from "./knowledge-publication";
+import type { ConfidencePolicy, ConfidenceProfile, ProfileKey } from "./confidence/profile";
+import type { ShadowLabelCollector } from "./confidence/shadow-labels";
 export type {
   RetrievedChunk,
   RerankedChunk,
@@ -155,8 +157,27 @@ export interface BuildGraphConfig {
   /** context token 预算（T2.2） */
   maxContextTokens?: number;
   maxChunks?: number;
-  /** 置信度阈值（T2.4） */
+  /** 置信度阈值（T2.4）。显式给出即覆盖 profile 的 floor，并在诊断里标记 overridden */
   confidenceThreshold?: number;
+  /**
+   * 置信度判决参数（T2.4）。一般不用直接传——优先用 `confidenceProfiles` + `confidenceContext`，
+   * 让阈值带着标定出处进来。直接传等于手动指定，会在诊断里标记为手动覆盖。
+   */
+  confidencePolicy?: Partial<ConfidencePolicy>;
+  /** 标定 profile 仓库：按运行时前提解析出该用哪份阈值 */
+  confidenceProfiles?: ConfidenceProfile[];
+  /**
+   * 运行时前提（当前 reranker 模型 / 知识库版本 / 业务域）。
+   * 与 profile 里的前提不一致时会被标 stale ——这就是「换模型、涨到 1 万篇」的告警入口。
+   */
+  confidenceContext?: Partial<ProfileKey>;
+  /**
+   * 影子模式弱标签采集器（confidence/shadow-labels）。
+   * 注入后每轮知识问答的闸门判决会记进采集器，下一轮用户行为（要求转人工 /
+   * 重复提问）自动打弱标签，攒够导出给 `pnpm calibrate` 做实测标定。
+   * **只记录不干预判决**——接入零风险，标签逻辑错了最多数据废了。
+   */
+  shadowCollector?: ShadowLabelCollector;
   /** 单会话 token 预算（T6.3） */
   sessionTokenBudget?: number;
   /** 前置拦截（T9.3） */

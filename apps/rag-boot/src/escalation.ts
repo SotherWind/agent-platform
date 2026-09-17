@@ -8,6 +8,7 @@
  */
 import { z } from "zod/v4";
 import type { AnswerCitation, RerankedChunk } from "./schema";
+import { ConfidenceDiagnosticsSchema, type ConfidenceDiagnostics } from "./confidence/profile";
 import { redactForClearance, redactObjectForClearance, type AgentClearance } from "./observability/pii";
 
 export const EscalationTriggerSchema = z.enum([
@@ -193,6 +194,14 @@ export const HandoffPackageSchema = z.object({
     )
     .default(() => []),
   confidence: z.number().nullable().default(null),
+  /**
+   * 置信度判决诊断：阈值出处（profile / 标定状态）、绝对覆盖度、区分度、群像标记。
+   *
+   * 坐席需要的不是"置信度 0.28"，而是"为什么低"——知识库里没有、还是召回的是一簇
+   * 勉强相关的 chunk（群像式幻觉）。后者答案读起来很顺，更容易被误当可信内容直接发出去，
+   * 所以必须在交接包第一屏就能看出来。这里都是数值与布尔，不含 PII，无需脱敏。
+   */
+  confidenceDiagnostics: ConfidenceDiagnosticsSchema.nullable().default(null),
   /** PII 已按坐席权限脱敏 */
   piiRedacted: z.boolean().default(true),
   clearance: z.enum(["none", "masked", "full"]).default("masked"),
@@ -218,6 +227,8 @@ export interface BuildHandoffInput {
   citations?: AnswerCitation[];
   retrievedContext?: RerankedChunk[];
   confidence?: number | null;
+  /** 置信度判决诊断（阈值出处 + 群像标记），供坐席判断"低置信的原因" */
+  confidenceDiagnostics?: ConfidenceDiagnostics | null;
   /** 坐席权限决定脱敏强度 */
   clearance?: AgentClearance;
   clock?: () => number;
@@ -262,6 +273,7 @@ export function buildHandoffPackage(input: BuildHandoffInput): HandoffPackage {
     })),
     retrievedContext,
     confidence: input.confidence ?? null,
+    confidenceDiagnostics: input.confidenceDiagnostics ?? null,
     piiRedacted: clearance !== "full",
     clearance,
     createdAt: now,

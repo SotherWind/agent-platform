@@ -339,6 +339,7 @@ export * from "./mcp/stateless";
 export * from "./mcp/confirmation";
 export * from "./state";
 export * from "./agent";
+export * from "./confidence/shadow-labels";
 export * from "./vectorstore";
 export * from "./knowledge-publication";
 export * from "./rerank";

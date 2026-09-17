@@ -132,6 +132,11 @@
 - 定位：`scripts/sync-metadata.ts:67-74`、`scripts/sync-live-metadata.ts:46,107`
 - 修复动作：从当前 alias/collection 读取上一版本文档后再做 diff；live rebuild 不自动混入 demo schema；增加 dry-run 差异和回滚保护。
 - 验收标准：无变化同步不触发全量重建；删除字段产生 tombstone；生产索引不出现 demo datasource。
+- **本地开发例外（2026-09-16，用户确认）**：`scripts/sync-live-metadata.ts` 新增 **`--include-demo`** 开关，
+  显式传参时把 `DEMO_SCHEMA_DOCUMENTS`（13 条，全部 `ecommerce_sqlite`）一并写入，用于让本地索引保持
+  「live 24 + demo 13 = 37 条」的既有状态。它**不违反「不自动混入」**（不传该开关就绝不会混入，非自动行为），
+  但**确实偏离本条的验收标准**——在生产环境使用它等于主动引入一个已知不合规项。传参会打印
+  `demoIncluded: true` 并在写入前打一条 `[P2-07 例外]` 警告。
 
 ### [x] P2-08 优化缓存、限流和日志
 

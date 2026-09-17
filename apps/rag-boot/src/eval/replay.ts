@@ -46,7 +46,9 @@ export async function runFixtureThroughGraph(
     documentId: `doc-c${i + 1}`,
     tenantId: "tenant-eval",
     content,
-    score: 0.9,
+    // fixture 未指定分数时退化为 0.9（保持既有 fixture 行为不变）；
+    // 指定了就用指定的——这样群像式幻觉这类分布才能进评测。
+    score: script.chunkScores?.[i] ?? 0.9,
     metadata: {},
   }));
 
@@ -94,6 +96,10 @@ export async function runFixtureThroughGraph(
     secondVisit: fixture.context.secondVisit,
     deflected:
       !humanInvolved && finalAnswer !== "" && finalAnswer !== EMPTY_RETRIEVAL_FALLBACK,
+    // 闸门行为取自图的真实输出（不是 fixture 手写），因此可以被端到端断言
+    lowConfidence: result.lowConfidence === true,
+    flockHallucination: result.confidenceDiagnostics?.flockHallucination === true,
+    supportCount: result.confidenceDiagnostics?.supportCount ?? 0,
     latencyMs,
     costUsd: Number(((result.budget?.totalTokens ?? 0) * USD_PER_TOKEN).toFixed(6)),
     // 满意度来自真实用户的工单评价（T5.4 回流），单轮回放拿不到 → null 而不是编一个数

@@ -15,7 +15,7 @@ import { loadEvaluationFixtures } from "../eval/fixtures";
 import { replayTokenFor } from "../eval/replay";
 import { runEvaluation } from "../eval/runner";
 import { DEFAULT_QUALITY_GATE_CONFIG, evaluateQualityGate } from "../eval/quality-gate";
-import { SPECIALIST_CATEGORIES, type EvaluationReport } from "../eval/types";
+import { SPECIALIST_CATEGORIES, EvaluationFixtureSchema, type EvaluationReport } from "../eval/types";
 
 // 每条 fixture 都要 buildGraph 真跑一遍图，单轮全量约数秒；
 // T7.2/T7.3 的用例共享同一份报告，避免每个 it 都重跑。
@@ -74,8 +74,7 @@ describe("T7.1 评测框架", () => {
     }
   });
 
-  it("标注与图行为不一致时判定失败（回归能被探测到）", async () => {
-    // 这是 P7 修复的核心价值：此前 observed 就是 fixture 手写值，标注写错也永远绿。
+  it("标注与图行为不一致时判定失败（回归能被探测到）", async () => {    // 这是 P7 修复的核心价值：此前 observed 就是 fixture 手写值，标注写错也永远绿。
     // 现在把 billing-001 的 expected.knowledgeHit 改成与图真实行为相反的值，判定必须红。
     const dir = mkdtempSync(join(tmpdir(), "rag-boot-eval-"));
     try {
@@ -101,8 +100,81 @@ describe("T7.1 评测框架", () => {
   });
 });
 
-describe("T7.2 指标计算", () => {
-  it("resolutionRate 定义为无人工介入且无二次来访", async () => {
+describe("T7.4 置信度闸门的端到端验收", () => {
+  // 这一组补的是一个真实缺口：早先 replay 给所有 chunk 恒定 0.9 分，
+  // 于是"单条强命中"恒成立，置信度闸门在评测里从来没触发过——
+  // 也就是说闸门此前不在任何端到端验收范围内。
+  it("fixture 可指定 chunk 分数，且长度必须与召回一一对应", async () => {
+    const fixtures = await loadEvaluationFixtures();
+    const flock = fixtures.find((fixture) => fixture.id === "general-003");
+    expect(flock?.script.chunkScores).toEqual([0.36, 0.32, 0.31, 0.31, 0.3]);
+
+    // 长度不匹配必须报错，不能让分数和 chunk 错位
+    expect(() =>
+      EvaluationFixtureSchema.parse({
+        id: "bad",
+        category: "general",
+        query: "q",
+        script: {
+          retrievedChunks: ["a", "b"],
+          chunkScores: [0.9],
+          generate: "x",
+          review: { passed: true },
+        },
+        expected: { knowledgeHit: true, factuallyCorrect: true, toolCallCorrect: true },
+      }),
+    ).toThrow(/一一对应/);
+  });
+
+  it("群像式幻觉场景被闸门拦下：编造的具体承诺不进用户话术", async () => {
+    const report = await evalOnce();
+    const flock = report.results.find((result) => result.caseId === "general-003");
+    expect(flock).toBeDefined();
+    // 图真的判了低置信（不是 fixture 手写的值）
+    expect(flock?.lowConfidence).toBe(true);
+    expect(flock?.observed.flockHallucination).toBe(true);
+    // 绝对口径：5 条里只有 1 条过 floor 线
+    expect(flock?.observed.supportCount).toBe(1);
+    // 这条的 generate 编了一个引用里没有的 99.99% —— 被输出侧 grounding 拦下，
+    // 走转人工；用户看到的是安全话术而不是那段编造（草稿只进交接包）。
+    expect(flock?.humanInvolved).toBe(true);
+    expect(flock?.factuallyCorrect).toBe(true);
+    expect(flock?.passed).toBe(true);
+  });
+
+  it("群像式幻觉 + 模型不编造时：低置信话术真的到了用户话术里", async () => {
+    const report = await evalOnce();
+    const flock = report.results.find((result) => result.caseId === "general-004");
+    expect(flock?.lowConfidence).toBe(true);
+    expect(flock?.observed.flockHallucination).toBe(true);
+    // 没有编造具体数字 → 输出侧不拦 → 答案带不确定表述正常发出
+    expect(flock?.humanInvolved).toBe(false);
+    expect(flock?.factuallyCorrect).toBe(true);
+    expect(flock?.passed).toBe(true);
+  });
+
+  it("高置信路径不被误伤：强命中标注 lowConfidence=false 且通过", async () => {
+    const report = await evalOnce();
+    const strong = report.results.find((result) => result.caseId === "general-001");
+    expect(strong?.lowConfidence).toBe(false);
+    expect(strong?.passed).toBe(true);
+    // 基线：当前 fixture 集应当全部通过（否则上面的"不一致探测"用例会因错误原因变绿）
+    expect(report.metrics.passRate).toBe(1);
+  });
+
+  it("群像触发率与低置信率有独立统计口径", async () => {
+    const metrics = (await evalOnce()).metrics;
+    // general-003（编造承诺）与 general-004（不编造）都是群像场景
+    expect(metrics.flockHallucinationCount).toBeGreaterThanOrEqual(2);
+    expect(metrics.lowConfidenceRate).toBeGreaterThan(0);
+    // 低置信是检索侧诊断指标，不等于转人工率
+    expect(metrics.lowConfidenceRate).not.toBe(metrics.escalationRate);
+    expect(metrics.metricNotes.flockHallucinationCount).toContain("群像式幻觉");
+    expect(metrics.metricNotes.lowConfidenceRate).toContain("不等于转人工率");
+  });
+});
+
+describe("T7.2 指标计算", () => {  it("resolutionRate 定义为无人工介入且无二次来访", async () => {
     const report = await evalOnce();
     const expected = report.results.filter((result) => !result.humanInvolved && !result.secondVisit).length / report.results.length;
     expect(report.metrics.resolutionRate).toBe(expected);

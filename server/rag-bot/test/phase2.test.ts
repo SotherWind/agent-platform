@@ -110,6 +110,8 @@ const baseConfig: ServerConfig = {
   reviewStreamMode: "chunked",
   specialistPolicy: "always",
   proposalSecret: "test-secret",
+  shadowLabels: false,
+  shadowLabelsPath: "./data/shadow-labels.json",
 };
 
 describe("http 二期路由", () => {

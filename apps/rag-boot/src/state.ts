@@ -18,6 +18,7 @@ import {
   BudgetUsageSchema,
 } from "./schema";
 import { EscalationDecisionSchema, HandoffPackageSchema } from "./escalation";
+import { ConfidenceDiagnosticsSchema } from "./confidence/profile";
 import { ReviewVerdictSchema } from "./guardrails/output";
 import { ActionProposalSchema } from "./actions/proposal";
 import { ActionSignalSchema } from "./actions/signal";
@@ -74,6 +75,11 @@ export const AgentState = new StateSchema({
   // ---- T2.4 置信度 ----
   confidence: z.number().nullable().default(null),
   lowConfidence: z.boolean().default(false),
+  /**
+   * 置信度判决诊断：阈值出处（profile 匹配/标定状态）、绝对覆盖度、区分度、群像标记。
+   * 必须显式声明并声明默认值——zod 会把未声明的字段静默剥离（本项目踩过的坑）。
+   */
+  confidenceDiagnostics: ConfidenceDiagnosticsSchema.nullable().default(null),
 
   // ---- T1.1 分诊 ----
   triage: TriageResultSchema.nullable().default(null),

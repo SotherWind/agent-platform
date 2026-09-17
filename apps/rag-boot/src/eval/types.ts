@@ -20,6 +20,15 @@ export type SpecialistCategory = z.infer<typeof SpecialistCategorySchema>;
 export const FixtureScriptSchema = z.object({
   /** 检索库按此回包（fake 向量库）；空数组模拟知识库未命中 */
   retrievedChunks: z.array(z.string()).default([]),
+  /**
+   * 各 chunk 的 rerank 分数，与 retrievedChunks 一一对应（长度必须相同）。
+   *
+   * 为什么必须可配：早先 replay 给所有 chunk 恒定 0.9，于是"单条强命中"恒成立、
+   * 置信度闸门在评测里**从未触发过**——闸门的端到端行为等于没被测。给了分数之后，
+   * 群像式幻觉（一簇 0.30 上下的 chunk）这类场景才能进评测。
+   * 缺省时退化为全部 0.9（保持既有 fixture 行为不变）。
+   */
+  chunkScores: z.array(z.number().min(0).max(1)).optional(),
   triage: z
     .object({
       categories: z.array(z.string()).default(["general"]),
@@ -73,8 +82,20 @@ export const EvaluationFixtureSchema = z.object({
     knowledgeHit: z.boolean(),
     factuallyCorrect: z.boolean(),
     toolCallCorrect: z.boolean(),
+    /**
+     * 期望的低置信判决。给了它就参与 pass/fail 判定——这让置信度闸门第一次能被
+     * 端到端断言（此前闸门不在任何 fixture 的验收范围内）。
+     * 留空表示该 fixture 不关心闸门行为。
+     */
+    lowConfidence: z.boolean().optional(),
   }),
-});
+})
+  .refine(
+    (fixture) =>
+      fixture.script.chunkScores === undefined ||
+      fixture.script.chunkScores.length === fixture.script.retrievedChunks.length,
+    { message: "script.chunkScores 必须与 retrievedChunks 一一对应（长度相同）" },
+  );
 
 export type EvaluationFixture = z.infer<typeof EvaluationFixtureSchema>;
 
@@ -95,6 +116,12 @@ export interface ReplayObservation {
   humanInvolved: boolean;
   secondVisit: boolean;
   deflected: boolean;
+  /** 本轮是否被判低置信（T2.4 闸门） */
+  lowConfidence: boolean;
+  /** 本轮是否命中群像式幻觉（一簇勉强相关的 chunk） */
+  flockHallucination: boolean;
+  /** 过 floor 线（绝对口径）的 chunk 条数 */
+  supportCount: number;
   latencyMs: number;
   costUsd: number;
   satisfaction: number | null;
@@ -123,6 +150,8 @@ export interface EvaluationResult {
   secondVisit: boolean;
   deflected: boolean;
   resolved: boolean;
+  lowConfidence: boolean;
+  flockHallucination: boolean;
   latencyMs: number;
   costUsd: number;
   satisfaction: number | null;
@@ -143,6 +172,10 @@ export interface EvaluationMetrics {
   resolutionRate: number;
   deflectionRate: number;
   escalationRate: number;
+  /** 低置信率（T2.4 闸门触发率）。与 escalationRate 分开：低置信不等于已转人工 */
+  lowConfidenceRate: number;
+  /** 群像式幻觉命中数——这条指标此前完全不存在，属于"没有统计口径"的状态 */
+  flockHallucinationCount: number;
   p95LatencyMs: number;
   averageCostPerSessionUsd: number;
   satisfactionAverage: number | null;
@@ -150,6 +183,8 @@ export interface EvaluationMetrics {
   metricNotes: {
     resolutionRate: string;
     deflectionRate: string;
+    lowConfidenceRate: string;
+    flockHallucinationCount: string;
   };
 }
 

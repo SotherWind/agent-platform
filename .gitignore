@@ -86,3 +86,7 @@ apps/rag-boot/security-report.json
 
 # rag-bot 运行时数据（进程 PID、实时 CRM 数据等，非源码）
 server/rag-bot/data/
+
+# rag-boot 标定产物（由 pnpm calibrate --out config/confidence 重新生成，非源码）
+apps/rag-boot/config/confidence/*.json
+!apps/rag-boot/config/confidence/seed-queries.json

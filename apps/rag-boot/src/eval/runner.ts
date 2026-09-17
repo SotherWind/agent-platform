@@ -17,7 +17,10 @@ export async function runEvaluation(options: EvaluationOptions = {}): Promise<Ev
     const passed =
       fixture.expected.knowledgeHit === observation.knowledgeHit &&
       fixture.expected.factuallyCorrect === observation.factuallyCorrect &&
-      fixture.expected.toolCallCorrect === observation.toolCallCorrect;
+      fixture.expected.toolCallCorrect === observation.toolCallCorrect &&
+      // 标注了期望低置信时，闸门行为也参与判定——闸门由此进入端到端验收范围
+      (fixture.expected.lowConfidence === undefined ||
+        fixture.expected.lowConfidence === observation.lowConfidence);
 
     results.push({
       caseId: fixture.id,
@@ -33,6 +36,8 @@ export async function runEvaluation(options: EvaluationOptions = {}): Promise<Ev
       secondVisit: observation.secondVisit,
       deflected: observation.deflected,
       resolved: !observation.humanInvolved && !observation.secondVisit,
+      lowConfidence: observation.lowConfidence,
+      flockHallucination: observation.flockHallucination,
       latencyMs: observation.latencyMs,
       costUsd: observation.costUsd,
       satisfaction: observation.satisfaction,

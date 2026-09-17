@@ -24,6 +24,8 @@ export function calculateMetrics(results: EvaluationResult[]): EvaluationMetrics
     resolutionRate: rate(resolved.length, results.length),
     deflectionRate: rate(deflected.length, results.length),
     escalationRate: rate(results.filter((result) => result.humanInvolved).length, results.length),
+    lowConfidenceRate: rate(results.filter((result) => result.lowConfidence).length, results.length),
+    flockHallucinationCount: results.filter((result) => result.flockHallucination).length,
     p95LatencyMs: percentile95(results.map((result) => result.latencyMs)),
     averageCostPerSessionUsd: rate(results.reduce((sum, result) => sum + result.costUsd, 0), results.length),
     satisfactionAverage: rated.length === 0 ? null : rate(rated.reduce((sum, result) => sum + (result.satisfaction ?? 0), 0), rated.length),
@@ -31,6 +33,8 @@ export function calculateMetrics(results: EvaluationResult[]): EvaluationMetrics
     metricNotes: {
       resolutionRate: "无人工介入且无二次来访；它是质量指标。",
       deflectionRate: "路由指标，不得单独论证收益；它与 resolutionRate 独立计算。",
+      lowConfidenceRate: "检索侧闸门触发率；它是诊断指标，不等于转人工率（还可能再被终审等条件拦下）。",
+      flockHallucinationCount: "一簇勉强相关的 chunk 被识别为群像式幻觉的条数，用于盯住最隐蔽的那类编造风险。",
     },
   };
 }

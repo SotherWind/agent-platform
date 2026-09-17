@@ -20,7 +20,11 @@
     "test:cov": "vitest run --coverage --pool=threads --no-file-parallelism --no-isolate --maxWorkers=1",
     "typecheck": "tsc --noEmit",
     "eval": "tsx src/eval/cli.ts",
-    "eval:gate": "tsx src/eval/cli.ts --gate"
+    "eval:gate": "tsx src/eval/cli.ts --gate",
+    "calibrate": "tsx scripts/calibrate-threshold.ts",
+    "synthetic:data": "tsx scripts/generate-calibration-data.ts",
+    "probe:user-sim": "tsx scripts/probe-user-simulation.ts",
+    "verify:provider": "tsx scripts/verify-provider.ts"
   },
   "keywords": [],
   "author": "",

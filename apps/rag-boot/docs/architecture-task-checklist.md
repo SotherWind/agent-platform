@@ -475,10 +475,54 @@ describe("置信度", () => {
 
 **验收标准**：✅ 阈值可配置；✅ 低置信路径与高置信路径行为可区分测试。
 
-**实现落点**（`src/nodes/confidence.ts`，测试 `src/__tests__/t24-confidence.test.ts`，4 条；ASR 联动见 t91）
+**实现落点**（`src/nodes/confidence.ts`，测试 `src/__tests__/t24-confidence.test.ts`，10 条；标定见 `src/confidence/` + `scripts/calibrate-threshold.ts`；ASR 联动见 t91）
 
-- `computeConfidence` = 归一化 topScore × 0.7 + coverage × 0.3，且 **topScore < threshold 时硬性低置信**（防「候选集只有一条」被相对归一化洗成满分）；阈值经 `confidenceThreshold` 可配置。
+- `computeConfidence` 用**三条绝对判据**：`floor`（下限，低于即"库里没有"）、`solid`（实心线，高于则单条可独立支撑）、中间地带要求「多条绝对过线」+「分布有区分度」双条件；阈值经 `confidenceThreshold` 可配置。
+- coverage 是**绝对口径**（分数 ≥ floor 的占比），不是「接近最高分的占比」。
 - 低置信答案套 `withConfidenceTone` 不确定表述；连续两轮 → `low_confidence_repeat` 升级（与 T5.1 联动）；置信度与 lowConfidence 写 state 并进 span attributes（tracing 可断言）。
+
+**与清单原文的设计偏差**（原文：「`computeConfidence` = 归一化 topScore × 0.7 + coverage × 0.3，且 topScore < threshold 时硬性低置信」）：
+
+1. **去掉了 min-max 归一化**。`(top - min) / (max - min)` 在数学上恒等于 1（top 按定义就是 max），所以原公式值域固定为 `[0.7, 1]`，`score < threshold` 一次都不会触发——合成分数是装饰性的，真正的闸门只有 `topScore < threshold`。与 T9.1 已修的「ASR 加权平均永远够不到阈值」同类缺陷，故一并改掉。
+2. **coverage 由相对改绝对**。相对口径衡量的是"分布有多平"而非"有多少条相关"，导致两种反向错误：群像式幻觉（一簇勉强相关的 chunk）coverage 算成 100% 被放行；一条强命中 + 噪声却被扣分。绝对口径同时修掉两者。
+3. **新增 `solid` 与区分度判据**。原设计只有一条硬门槛，无法表达"单条强命中够用"与"一簇中等分不够用"的差别，这正是群像式幻觉的入口。
+4. **阈值从常数改为标定 profile**。0.35 保留为 `UNCALIBRATED_PROFILE` 的保守默认值并显式标 `calibrated: false`；真实阈值由 `pnpm calibrate` 从历史人工接管数据标定，profile 带 `rerankerModel`/`kbVersion`/`domain` 前提键，前提不匹配标 `stale` 并进 tracing——避免换模型/换库后阈值静默失效。
+5. **新增 `flockHallucination` 独立标记**，进 state / tracing / degradations，使群像式幻觉可统计可告警，而非混入 lowConfidence。
+6. **阈值之外的全部闸门参数也改为数据驱动**（`chooseFloor` / `chooseSolid` / 坐标下降联合优化）。原先只有 `floor` 可标定、其余是经验值，等于把"拍脑袋"从阈值搬到了参数表。现在 `chunkScores`（整条召回分数分布）是标定的硬前提，schema 直接拒绝缺分布的记录——因为 `floor`/`solid` 都作用在 rerank 尺度上，只给合成分数连 `floor` 都会标错。
+7. **锁定尺度不变量**：`floor`/`solid` 一律标在 **rerank 原始分数（topScore）** 尺度上，`chooseThreshold` 出的合成分数尺度阈值只作对照口径。诊断出并修掉了一个真实缺陷——早期实现把合成分数尺度的阈值当 `floor` 用，导致 floor 跑到所有 topScore 之上、中间地带与群像判据整段失效。有专门的"尺度回归"测试守这条。
+8. **闸门进入端到端验收**：评测 fixture 支持 `chunkScores` 与 `expected.lowConfidence`。此前回放给所有 chunk 恒定 0.9 分，闸门从未触发过、等于不在验收范围内；新增群像场景 fixture 后，mutation 验证（coverage 改回相对口径）会让评测用例变红。
+9. **交接包带上 `confidenceDiagnostics`**：坐席需要知道"低置信的原因"（知识缺失 vs 群像式幻觉），而不只是一个数字。
+10. **候选网格从观测分布派生**（`derivePolicyGrid`）：`floor`/`solid` 取观测 topScore 分位点、`minRange` 取落差分位点（上界=最大落差）、`minSupportShare` 取覆盖占比分位点、`flockDiscriminationMax` 取区分度分位点；`coverageWeight` 派生不出来（它是合成分数的混合权重，不锚在观测特征上），报告里显式标注为设计选择。当前值一律纳入候选，保证搜索不比初值更差。
+11. **样本外验证与泛化判定**（`splitCases` / `judgeGeneralization`）：按 `hash(id)` 确定性切分标定集/留出集，拟合全程只用标定集；最终 policy 在留出集复算。过拟合判据用**训练集自身的置信区间宽度当噪声底线**——差距在噪声内说明不了任何事，超出才算证据，且该底线随样本量自动收紧。留出集 < 20 条时不给结论。
+12. **敏感性报告**（`sensitivityReport` / `summarizeSensitivity`）：把每个参数在候选值上的表现摊开，判定该选择落在**平台期**还是**刀尖**上（只有当前值可行即为脆）。
+13. **`profile.generalization`**：标定集与留出集成绩、差距、过拟合嫌疑一并落进产物。没有它，"召回 100%"无法区分"真的强"和"在这份标注集上恰好强"。
+14. **构造数据通道 + 决策带分析**（`src/confidence/synthetic.ts` / `src/confidence/margin.ts` / `scripts/generate-calibration-data.ts`）：实测数据缺失时用真链路（真 embedding + 真 reranker + 真知识库）跑分数、用**构造标签**（种子查询的 `stratum`）出数据。`decisionBand` 只依赖类内分布，给出可行阈值区间、带宽、由哪两条样本决定、去掉它们会不会塌缩；`thresholdTradeoff` 输出每个候选阈值的 (tpr, fpr) 取舍表。**刻意不输出 precision**——它依赖流行度，而流行度是构造的。
+15. **provenance 守卫**：`CalibrationRecord.provenance`（`measured` / `constructed` / `none`）→ `resolveProvenance` 取最弱一档（混合组整组降级）→ `ConfidenceProfile.calibrated/provisional`。schema 的 `superRefine` 强制 `calibrated=true ⟹ provenance="measured"`，使"拿构造数据冒充实测标定"在校验层就不可能；`describeResolution` 打出 `exact/provisional`，交接包带 `provisional` 字段。
+16. **实测替代结论**：本项目真实链路实测下，默认 `0.35` 落在可行区间 (0.3926, 0.4767] **之外**（偏低），召回仅 83.3%，漏掉的三条全部来自 `near_miss` 地层。**但这条结论已被下一步推翻**（见 18），保留在此是为了记录被推翻的过程。
+17. **用户模拟探针**（`src/confidence/user-simulation.ts` / `scripts/probe-user-simulation.ts`，`pnpm probe:user-sim`）：由知识库章节自指令合成**真实措辞**的问题；用**答案消融**（把承载答案的那一节从候选池拿掉）产出标签；两个确定性检查保证标签可用——`checkSynthesis`（全库检索下源章节须排前三）、`measureAblationResidue`（被消融章节有多少句子在别处仍能找到出处，拦住"知识库重复写了同样内容"的假负样本）。附 `--redundancy-only` 做知识库冗余体检。
+18. **对第一问的实质修正**：模拟真实措辞后，可答问题的 topScore 跨度是 **0.0323 ~ 0.9945**，`floor=0.35` 会误伤 **25%（10/40）** 的**确实答得了**的问题（手写种子集下是 0%）；干净子集上决策带**不可分**（一条模型自认找不到依据的问题拿 0.9113，一条答案在库的问题只拿 0.0323）。**所以问题不是"0.35 偏低"，而是 topScore 单阈值这个判据形状不对**——它主要响应措辞相似度。同一批实验还测出：在被消融的上下文下 **40% 的回答不承认"库里没有依据"**（生产 prompt 已明令禁止编造）。`admitsIgnorance` 的话术表第一版漏了 `GENERATE_PROMPT` 指定的"这个问题我需要进一步确认"，导致该比例被严重低估（12.5% vs 修正后 60%）——**话术表必须对着生产 prompt 的实际措辞写**。
+
+19. **判据评测台 + 一条被测量过的死路**（`src/confidence/coverage.ts`，`pnpm probe:user-sim --judge-compare`）：把"知识库答不答得了"从相似度改写成**属性是否真的被给出**（问的是时长/金额/数量/条件/能否，上下文里有没有该属性的取值、且与问题主体词共现）。在同一批 84 条同源样本上实测：**误伤 23.8% 持平、漏放从 26.2% 涨到 50.0%**——更差。根因是词法判据分不清"同一主体的哪个属性"（问"退差价多久到账"，上下文里"签收后 15 天内降价可申请价保"同时含主体词与时长，但那是申请时限）。模块保留的用途是：① `compareJudges` + `--judge-compare` 构成**可复用的判据评测台**，任何候选判据都能先在这批样本上跟基线比；② 把这条死路写进代码，避免重新提出。
+20. **"让 Agent 当真实用户去用系统"解决不了标签问题**：**真实用户与知道答案是互斥的**——能当用户时没有真值，有真值时已经是评测者（那时对照知识库即可，不必"去用"）。唯一真用户能提供且不需真值的信号是**答非所问**，它只能筛掉明显偏离，恰好漏掉"看起来对但其实错"这一类。
+
+21. **用户子智能体当标签的实测**（`src/confidence/user-agent.ts`，`pnpm probe:user-sim --user-agent` / `--replay-user-agent`）：真的开一个"不知道答案"的用户子智能体（只看得到问题 + 回答，看不到知识库），两种人格（普通客户 / 挑剔客户）是为隔离"是不是只是人格太宽容"。实测（77 条样本）：**普通客户在 36.8% 的"知识库给不出答案"的问题上说"答上了"**；挑剔人格降到 16.7%，但那是靠被要求核对"有没有正面回答你问的那件事"——**那时它已经是评委不是用户**，且反过来把 15% 的答得了判成没答上（两者与真值一致率几乎一样：82% vs 84%）。**决定性的一条：照提案做法选阈值，两种人格都选不出来**（可行区间宽 −0.9045 / −0.8704），因为用户判断与分数排序不同向——不是"更差的标签"，是**和特征不同向**的标签。现役基线对照为误伤 20.0% / 漏放 30.0%。结论：用户子智能体可以**找 bug**（答非所问那批是真发现）、可以生成输入，但不能当标签。
+
+本轮新增的**诚实缺口**（都写进 `docs/confidence-calibration.md` §8，没藏）：
+
+- 阈值本身**仍未真正标定**。构造数据能出 provisional 先验，但流行度与真实负样本难度分布是构造的，
+  无法靠算法或统计手段补齐——只能等标注回流。
+- **已测出 `floor` 判据形状不对，且"换更好的判据"也已被实测否决**（漏放翻倍）。
+  正确的下一步是**绕开判据**（引文强制 / 接受低置信为常态并按比例做预算 / 从检索侧治），
+  这三条**都还没做**。
+- 模拟用户**不能当标签**：它对流畅的编造免疫，偏差有方向。正确用途是生成输入分布。
+  "让 Agent 亲自当用户"同理解决不了——真实用户与知道答案互斥。
+- 消融的正类标签仍有噪声：残留度只拦**逐字重复**，拦不住"信息可由邻章拼出来"，
+  需要干净子集复核才能下结论。
+- 种子集 `near_miss` 仅 8 条，而它恰好决定阈值下界；决策带由极少数样本撑起。
+- 重新切块必须 bump `kbVersion`：rerank 分数尺度同时取决于模型与 chunk 组织方式
+  （同一内容作为孤立单句 0.1571、带标题上下文 0.97），只改切块不改版本号会静默失效。
+
+验收标准（✅ 阈值可配置；✅ 低置信路径与高置信路径行为可区分测试）均保持成立，并新增「群像式幻觉不得放行」「一强多弱不得误伤」「合成分数能真的低于阈值」「floor/solid 必须在 rerank 尺度上」「模型换版后 stale 必须浮现」「切分确定性且不重不漏」「泛化判定引用噪声底线」等反向保护用例。已做 mutation 验证：coverage 改回相对口径 → 主反例与评测用例变红；移除区分度判据 → 另两条变红；floor 改回合成分数尺度 → 尺度回归用例变红（中间地带为空）。
 
 ---
 
@@ -666,6 +710,7 @@ describe("输出侧 Guardrails 与 Reviewer", () => {
 **实现落点**（`src/guardrails/output.ts`，测试 `src/__tests__/t43-output-review.test.ts`，6 条；`security.test.ts` 第 3 条与 `pipeline.test.ts` 终审用例保留为跨切面基线）
 
 - `checkOutput` 四类违规码：答案出现 citations 之外的账户数字（`extractAccountNumbers` 对照）、虚假承诺（`OVERPROMISE_PATTERNS`）、绝对化广告法用语（`ABSOLUTE_CLAIM_PATTERNS`）、提议需确认动作却未附确认入口。
+- **grounding 覆盖范围补强**（2026-09-15，dogfooding 发现）：原 `extractAccountNumbers` 只抓金额与 8 位以上账号/订单号，于是「我们承诺 99.99% 的可用性」这种**承诺性百分比**落在 grounding 之外——而它恰恰是群像式幻觉最典型的产物（低置信闸门只套不确定表述、不移除内容，真正拦住编造的是这一层）。新增 `extractCommitmentNumbers`，比对用**数字核心**（`99.99`）而非整串（`99.99%`），以兼容引用里的 "可用性 99.99" / "99.99 per cent" 等写法，避免重演历史上「自产单号被 8 位数字规则误判、确认流程整个断掉」那类格式性误杀。已知不覆盖 `3 个 9`（需归一化）与裸的"承诺"字样（交给 overpromise 与模型终审）。
 - `Reviewer`：二次模型对照检查表，`maxReviewRounds` 上限内要求改写；**review() 返回值始终保留 draft**——达到上限仍不通过时调用方拿草稿去建交接包（T5.2），不丢弃。主图用例验证终审在生成节点之后、输出携带租户引用。
 - **补测说明（2026-09-03）**：t43 建立前，四类违规码中仅 ungrounded numbers / 虚假承诺 / missing_confirmation 有断言，**绝对化用语（最佳/第一品牌/唯一/最低价）全库零断言**——实现存在但从未被验证。已补齐：4 类违规码 + Reviewer 不通过草稿经 buildHandoffPackage 不丢弃 + 确定性短路不耗模型，共 6 条。另修复 `extractAccountNumbers`：系统自产单号（`prop-<时间戳>-<seq>`、`sig-<hash>`、`ticket-<uuid>`）此前会被 `\d{8,}` 规则误判为未引用账户数字，导致确认流程被 ungrounded_numbers 误杀——已先 scrub 系统单号再提取。
 
